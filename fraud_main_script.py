@@ -4,16 +4,16 @@ import numpy as np
 import pickle
 import os
 import gc
-import fraud_feature_engineering
-import fraud_models
+from fraud_models import *
 
 
 local_path='input/'
-current_skip=144038095
+seed=714
 #options are 'test','train' and 'train sample', with nrows argument:
 
-'''#CatBoost model
-params = {'depth': 5,
+# CatBoost model
+cat_params = {
+ 'depth': 5,
  'iterations': 100,
  'l2_leaf_reg': 80,
  'learning_rate': .01,
@@ -21,27 +21,7 @@ params = {'depth': 5,
  'random_seed': 714,
  'scale_pos_weight':640}
 
-CatClf=CatClassifier('ante_day','last_day',params)
-CatClf.reduce_train(2*10**7,3*10**7)
-CatClf.pre_process('train')
-CatClf.fit_model()'''
-
-#LightGBM model
-lgb_params2 = {
-    'num_leaves': 2**5 - 1,
-    'objective': 'regression_l2',
-    'max_depth': 8,
-    'min_data_in_leaf': 50,
-    'learning_rate': 0.05,
-    'feature_fraction': 0.75,
-    'bagging_fraction': 0.75,
-    'bagging_freq': 1,
-    'metric': 'l2',
-    'num_threads': 4,
-    'num_boost_round': 1000,
-    'early_stopping_rounds': 50
-}
-
+# LightGBM model
 lgb_params = {
     'boosting_type': 'gbdt',
     'objective': 'binary',
@@ -63,21 +43,45 @@ lgb_params = {
     'reg_lambda': 0,  # L2 regularization term on weights
     'nthread': -1,
     'verbose': 0,
-}
-#xgb model
+    'early_stopping_rounds': 50}
+
+# Xgb model
 xgb_params = {
     'depth': 4,
     'custom_metric':'AUC',
     'objective':'binary:logistic',
     'learning_rate':.0054,
     'scale_pos_weight':640,
-    'seed':714
-}
+    'seed':714}
 
-model=lgbmClassifier('ante_day',lgb_params)
-model.pre_process('train')
-model.fit_model()
-model.feature_importance()
-model.get_submission()
+# level -1 (optional):
+# add new features to the available pool of features
+
+# level 0:
+sample_index = get_training_sample() # make subsampled set of the training set
+
+# Level 1
+# train 5 models of each engine
+# !! Do not prune the crawler's trees !!
+level1=load_data(train=False)
+lgbm_model=lgbmClassifier(sample_index,lgbm_params)
+xgb_model=XGBoostClassifier(sample_index,xgb_params)
+cat_model=CatClassifier(sample_index,cat_params)
+
+for i in range(5):
+    features=select_node()
+    level1['lgbm{}'.format(i+1)]=lgbm_model.fit_predict()
+    level1['xgb{}'.format(i+1)]=xgb_model.fit_predict()
+    level1['cat{}'.format(i+1)]=cat_model.fit_predict()
+
+# level 2:
+# make frame with predictions from level 1 models on the subsampled set
+# train 1 lgbm model
+# train 1 xgb model
+# train 1 catboost model
+
+# level 3
+# make weighted average of level 2 predictions
+
 
 #kaggle competitions submit [-h] -c COMPETITION -f FILE -m MESSAGE

@@ -1,100 +1,47 @@
+# make and save dataframe with features + engine + 50 round score as columns
+# add a columns checking if there isn't a model with the same features but less that has a bigger score.
+#
+
+
+
 import pandas as pd
+from sklearn.model_selection import train_test_split
+from fraud_feature_engineering import *
+import pickle
+
 class Model(object):
 
-    def __init__(self,train):
-        self.train=load_data(train,current_skip)
-        from sklearn.model_selection import train_test_split
-        self.train.name='training set'
-        self.train_pool=[]
-        self.valid=[]
-        self.valid_pool=[]
-        gc.collect()
-        self.test=[]
-        self.test_pool=[]
-        gc.collect()
+    sub=load_data(False)
+
+    def __init__(self,index,crawler_file):
+        self.train=[]
+        #self.train.name='training set'
         self.seed=714
+        self.current_model={}
+        self.sample_index=index
+        self.crawler=FeatureCrawler(crawler_file)
 
-    def reduce_train(self,from_i,to_i):
-        print('starting reduction of the training set')
-        self.train=self.train.iloc[from_i:to_i,:].reset_index(drop=True)
-        gc.collect()
-        print('reduction done')
-  
-    def cap(self):
-        if not self.capped:
-            self.train=(self.train.loc[(self.train['ip']<126413)&(self.train['app']<521)&(self.train['device']<3031)&(self.train['os']<604)&(self.train['channel']<498),:]
-                        .reset_index(drop=True)
-                       )
-            self.capped=True
-            gc.collect()
-        else:
-            print('capped validation set already created, use .val_cap')
-
-    def add_features(self,pickle):
-        print('Starting feature extraction')
-        if pickle=='train':
-            X=self.train
-        elif pickle=='test':
-            X=self.test
-        X=(X.assign(day=lambda x: x.click_time.dt.day.values.astype(np.int8),
-            hour=lambda x: x.click_time.dt.hour.values.astype(np.int8))
-            #.pipe(get_window,['app','hour'],'day',dt=None,pickle_name=pickle)
-            #.pipe(get_window,['channel','hour'],'day',dt=None,pickle_name=pickle)
-            #.pipe(get_window,'app','day',dt=5,pickle_name=pickle)
-            .pipe(get_window,['app','device'],'day',dt=5,pickle_name=pickle)
-            .pipe(get_window,['channel','device'],'day',dt=5,pickle_name=pickle)
-            .pipe(get_window,['app','channel','device'],'day',dt=5,pickle_name=pickle)
-            .pipe(get_delta,['ip','app'])
-            .pipe(get_delta,['ip','os'])
-            .pipe(get_delta,['ip','app','device'])
-            .pipe(get_delta,['ip','app'],1)
-            .pipe(get_delta,['ip','os'],1)
-            .pipe(get_delta,['ip','app','device'],1)
-            .drop(['click_time','day','hour','ip'],axis=1)
-        )
-            #.pipe(get_window,['app','ip'],'hour',dt=120)
-            #.pipe(get_window,['app','channel'],'hour',dt=120)
-            #.pipe(get_window,['app','os'],'hour',dt=120)
-            #.pipe(get_window,['app','device'],'hour',dt=120)
-            #.pipe(get_window,['ip','channel'],'hour',dt=120)
-            #.pipe(get_window,['ip','os'],'hour',dt=120)
-            #.pipe(get_window,['ip','device'],'hour',dt=120)
-            #.pipe(get_window,['channel','os'],'hour',dt=120)
-            #.pipe(get_window,['channel','device'],'hour',dt=120)
-            #.pipe(get_window,['os','device'],'hour',dt=120)
-            #.pipe(get_window,['app','ip','channel'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['app','ip','os'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['app','ip','device'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['app','channel','os'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['app','channel','device'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['app','os','channel'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['ip','channel','os'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['ip','channel','device'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['ip','os','device'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['channel','os','device'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['app','ip','channel','os'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['app','ip','channel','device'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['app','ip','device','os'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['app','device','channel','os'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['device','ip','channel','os'],'hour',dt=120,pickle_name=pickle)
-            #.pipe(get_window,['app','ip','channel','os','device'],'hour',dt=120,pickle_name=pickle)
-
-        print('feature extraction done')
-        return X
+    def build_features():
+        # loading the corresponding data to the training and testing set
+        for feature in current_model['feats']:
+            with open(feature+'.pqt','rb') as File:
+                feat_series=pd.read_parquet(File)
+            self.train=self.train.join(feat_series,how='left')
+            self.test=self.test.join(feat_series,how='left')
+            del(feat_series);gc.collect()
+        return self
 
     def pre_process(self,train=True,split_frac=.1):
         if train:
-            self.train=self.add_features('train')
             print('making the training and evaluation pools')
-            self.train,self.valid=train_test_split(self.train, test_size=split_frac, random_state=self.seed,stratify=self.train['is_attributed'])
+            self.train,self.valid=train_test_split(self.train.join(self.target), test_size=split_frac, random_state=self.seed, stratify=self.target)
             self.train=self.transform_to_native_file(self.train)
             self.valid=self.transform_to_native_file(self.valid)
             gc.collect()
         else:
-            self.test=self.add_features('test')
             self.test=self.transform_to_native_file(self.test,False)
         gc.collect()
-
+        return self
 
 class CatClassifier(Model):
 
@@ -119,6 +66,7 @@ class CatClassifier(Model):
             plot=False,
             use_best_model=True
         )
+        return self
 
     def get_submission(self):
         self.test = load_data('test')
@@ -126,6 +74,7 @@ class CatClassifier(Model):
         self.pre_process('test')
         submission['prediction']=self.model.predict_proba(self.test)[:,1]
         submission.to_csv('catboost_sub.csv',index=False)
+        return self
 
     #there's an issue here with the column names not being taken before the pool transformation
     def feature_importance(self):
@@ -133,14 +82,15 @@ class CatClassifier(Model):
         feat_importance['importance']=self.model.feature_importances_
         print(feat_importance)
         feat_importance.sort_values(ascending=False).to_csv('feature importance.csv')
+        return self
 
 class lgbmClassifier(Model):
 
-    def __init__(self,train,params):
+    def __init__(self,index,params,crawler_file=None):
         import lightgbm as lgb
-        pd.Series(params).to_csv('parameters.csv')
-        super().__init__(train)
+        super().__init__(index,crawler_file)
         self.params=params
+        #pd.Series(params).to_csv('parameters.csv')
 
     def transform_to_native_file(self,X,training=True):
         print('Creating the lgbDataset')
@@ -149,20 +99,42 @@ class lgbmClassifier(Model):
         else:
             return X
 
-    def fit_model(self):    
+    def fit_model(self):
         print('training model')
         self.model=lgb.train(self.params, self.train, num_boost_round= 2000,early_stopping_rounds= 150,
         valid_sets=[self.train,self.valid], verbose_eval=50)
-        self.model.save_model('lgbm_model.txt')
+        #self.model.save_model('lgbm_model.txt')
 
-    def get_submission(self):
-        self.test = load_data('test')
+        #update crawler with best score
+        self.current_model['score']=self.model.score
+        self.crawler()
+        return self
+
+    def get_submission(self,to_csv=True):
+        self.test = load_data(train=False)
         submission=pd.DataFrame(data={'click_id':self.test.pop('click_id')})
         self.pre_process(train=False)
         submission['is_attributed']=self.model.predict(self.test,num_iteration=self.model.best_iteration)
+        if ~to_csv:
+            return submission['is_attributed'].values()
         submission.to_csv('lgbm_sub.csv',index=False)
-        return submission
+        return self
 
+    def fit_predict():
+        # getting training and testing data
+        data=load_data()
+        self.train=data.loc[self.sample_index]
+        self.test=data.loc[self.sub.index]
+        del(data);gc.collect()
+
+        # getting a list of features from the crawler:
+        self.current_model=self.crawler.get_features()
+        self.build_features()
+        self.fit_model()
+        self.get_submission()
+
+
+        return 
     def feature_importance(self):
         print("Features importance...")
         gain = self.model.feature_importance('gain')
@@ -174,8 +146,10 @@ class lgbmClassifier(Model):
         plt.figure()
         ft[['feature','split']].head(25).plot(kind='barh', x='feature', y='split', legend=False, figsize=(10, 20))
         plt.gcf().savefig('features_importance.png')
+        return self
 
 class XGBoostClassifier(Model):
+
     def __init(self,train,params):
         import xgboost as xgb
         super().__init__(train)
@@ -191,6 +165,7 @@ class XGBoostClassifier(Model):
     def fit_model(self):    
         print('training model')
         self.model.fit(X,y)
+        return self
 
     def get_submission(self):
         self.test = load_data('test')
@@ -198,13 +173,14 @@ class XGBoostClassifier(Model):
         self.pre_process('test')
         submission['prediction']=self.model.predict_proba(self.test)[:,1]
         submission.to_csv('xgb_sub.csv',index=False)
-        return submission
+        return self
 
     def feature_importance(self):
         feat_importance=self.model.feature_importances_
         xgb.plot_importance(self.model)
         plt.show()
         feat_importance.sort_values(ascending=False).to_csv('feature importance.csv')
+        return self
 
 
 #this is not working yet, it was just copy-pasted here
