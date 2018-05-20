@@ -11,8 +11,6 @@ import pickle
 
 class Model(object):
 
-    sub=load_data(False)
-
     def __init__(self,index,crawler_file):
         self.train=[]
         #self.train.name='training set'
@@ -242,3 +240,9 @@ class EntityEmbedding(Model):
     def guess(self, features):
         features = self.preprocessing(features)
         return self.model.predict(features).flatten()
+
+
+
+class level1(object):
+
+    def __init__(self):
