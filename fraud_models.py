@@ -6,18 +6,18 @@
 
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from fraud_feature_engineering import *
+import feature_engineering_module as fem
 import pickle
 
 class Model(object):
 
-    def __init__(self,index,crawler_file):
+    def __init__(self,index,file_path,crawler_file):
         self.train=[]
         #self.train.name='training set'
         self.seed=714
         self.current_model={}
         self.sample_index=index
-        self.crawler=FeatureCrawler(crawler_file)
+        self.crawler=fem.FeatureCrawler(file_path,crawler_file)
 
     def build_features():
         # loading the corresponding data to the training and testing set
@@ -28,6 +28,10 @@ class Model(object):
             self.test=self.test.join(feat_series,how='left')
             del(feat_series);gc.collect()
         return self
+
+    def Cross_Validation(self):
+        score=0
+        return score
 
     def pre_process(self,train=True,split_frac=.1):
         if train:
@@ -108,6 +112,9 @@ class lgbmClassifier(Model):
         self.crawler()
         return self
 
+    def CV(self,dataset):
+
+
     def get_submission(self,to_csv=True):
         self.test = load_data(train=False)
         submission=pd.DataFrame(data={'click_id':self.test.pop('click_id')})
@@ -130,9 +137,8 @@ class lgbmClassifier(Model):
         self.build_features()
         self.fit_model()
         self.get_submission()
+        return self
 
-
-        return 
     def feature_importance(self):
         print("Features importance...")
         gain = self.model.feature_importance('gain')
@@ -179,7 +185,6 @@ class XGBoostClassifier(Model):
         plt.show()
         feat_importance.sort_values(ascending=False).to_csv('feature importance.csv')
         return self
-
 
 #this is not working yet, it was just copy-pasted here
 class EntityEmbedding(Model):
@@ -242,7 +247,57 @@ class EntityEmbedding(Model):
         return self.model.predict(features).flatten()
 
 
+class level1(object,file_path,config_path):
 
-class level1(object):
+    def __init__(self,parquet_path,config_path):
+        self.parquet_path=parquet_path
+        self.config.path=config_path
+        self.models=[]
+        self.manager=fem.FeatureManager(self.parquet_path,self.config_path)
+        for model in self.models:
+            model.crawler.update_features(self.manager.feature_list_)
+    
+    def get_models(self):
+        self.manager.get_sample()
+        for model in self.models:
+            print('Feature learning with {} model')
+            feats=Model.crawler.get_features()
+            #update_score(manager.buildmodel.CVcrawl(stop_condition))
+        # stop condition can bea dict {n feature sets that aren't related : minimal score x)
+        # or the tree is full.
+        # use CV on a relatively low number of iterations to learn
+        return self
 
+    def get_predicitons(self):
+        for model in self.models:
+            for leaf_features in model.crawler.leaves_
+                train=self.manager.get_training_data(leaf_features)
+                test=self.manager.get_test_data(leaf_features)
+                level1_feature=model.fit_predict(train,test)
+                del(train,test);gc.collect()
+                with open(level1_feature.name,'w') as File:
+                    level1_feature.to_parquet(File)
+
+        # Make predictions on new sample + sub file for level 2
+        return train,test
+
+
+class level2(object):
     def __init__(self):
+        # load level 1 dataframe feature by feature 
+        # split training and testing data
+
+    def train models(self):
+        #train one model of each
+
+    def get_predictions(self):
+        # apply trained models on the submission dataset from level1
+
+class level3(object):
+    def __init__(self):
+
+    def get_submission(self):
+        # weighted average of results from level2
+        # submission to kaggle
+        # recording the score ?
+
