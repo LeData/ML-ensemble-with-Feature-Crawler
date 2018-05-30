@@ -1,13 +1,14 @@
 import pandas as pd
 import numpy as np
 #import matplotlib.pyplot as plt
-import pickle
+import yaml
 import os
 import gc
 from fraud_models import *
 
 
 local_path='input/'
+config_path='config/'
 seed=714
 #options are 'test','train' and 'train sample', with nrows argument:
 
@@ -18,7 +19,7 @@ cat_params = {
  'l2_leaf_reg': 80,
  'learning_rate': .01,
  'custom_metric':'AUC',
- 'random_seed': 714,
+ 'random_seed': seed,
  'scale_pos_weight':640}
 
 # LightGBM model
@@ -52,36 +53,21 @@ xgb_params = {
     'objective':'binary:logistic',
     'learning_rate':.0054,
     'scale_pos_weight':640,
-    'seed':714}
+    'seed':seed}
 
-# level -1 (optional):
-# add new features to the available pool of features
+model_dict={'lgbm':lgb_params}
+with open(local_path+'level1models.yaml','w') as File:
+    yaml.dump(model_dict,File)
 
-# level 0:
-sample_index = get_training_sample() # make subsampled set of the training set
+# level 0 (optional):
+# add new features to the config file of the faeture manager of level1
 
 # Level 1
-# train 5 models of each engine
-# !! Do not prune the crawler's trees !!
-level1=load_data(train=False)
-lgbm_model=lgbmClassifier(sample_index,lgbm_params)
-xgb_model=XGBoostClassifier(sample_index,xgb_params)
-cat_model=CatClassifier(sample_index,cat_params)
-
-for i in range(5):
-    features=select_node()
-    level1['lgbm{}'.format(i+1)]=lgbm_model.fit_predict()
-    level1['xgb{}'.format(i+1)]=xgb_model.fit_predict()
-    level1['cat{}'.format(i+1)]=cat_model.fit_predict()
-
-# level 2:
-# make frame with predictions from level 1 models on the subsampled set
-# train 1 lgbm model
-# train 1 xgb model
-# train 1 catboost model
-
-# level 3
-# make weighted average of level 2 predictions
-
-
-#kaggle competitions submit [-h] -c COMPETITION -f FILE -m MESSAGE
+level1-LevelOne(model_dict,local_path,config_path)
+stopping_cond={'number':1,'threshold':0.85}
+level1.learn_until(stopping_cond)
+level2=LevelTwo(level1.get_level2_data(),model_list)
+level2.train()
+level3=LevelThree(level2.get_level3_data())
+level3.get_submission()
+level3.submit_to_kaggle()

@@ -3,7 +3,7 @@
 #
 
 
-
+import yaml
 import pandas as pd
 from sklearn.model_selection import train_test_split
 import feature_engineering_module as fem
@@ -11,25 +11,32 @@ import pickle
 
 class Model(object):
 
-    def __init__(self,index,file_path,crawler_file):
-        self.train=[]
-        #self.train.name='training set'
-        self.seed=714
-        self.current_model={}
-        self.sample_index=index
-        self.crawler=fem.FeatureCrawler(file_path,crawler_file)
+    seed=714
 
-    def build_features():
-        # loading the corresponding data to the training and testing set
-        for feature in current_model['feats']:
-            with open(feature+'.pqt','rb') as File:
-                feat_series=pd.read_parquet(File)
-            self.train=self.train.join(feat_series,how='left')
-            self.test=self.test.join(feat_series,how='left')
-            del(feat_series);gc.collect()
+    def __init__(self,index,file_path,crawler_file,increasing_measure=True):
+        self.train=[]
+        self.sample_index=index
+        self.crawler=fem.FeatureCrawler(file_path,crawler_file,increasing_measure)
+
+    def check_crawl_stop(self,condition):
+        # condition must be {'number': int, 'threshold': float}. It asks for at least n leaves above a certain threshold.
+        num_leaves=len(self.crawler.leaves_)
+        print('The crawler explored {}% of the feature space.'.format(self.crawler.status*100))
+        print('There are {} leaves available.'.format(num_leaves))
+            if self.crawler.status==1:                
+                return True
+            else:
+                return len({x:y for x,y in self.crawler.leaves_.items() if self.crawler.is_better(y,condition['threshold'])})>=condition['number']
+
+    def get_features_to_learn(self):
+        feat_dict=self.crawler.get_unscored_features()
+        return feat_dict
+
+    def update_learned_features(self,features):
+        self.crawler.update_features(features)
         return self
 
-    def Cross_Validation(self):
+    def CV_score(self,data):
         score=0
         return score
 
@@ -111,9 +118,6 @@ class lgbmClassifier(Model):
         self.current_model['score']=self.model.score
         self.crawler()
         return self
-
-    def CV(self,dataset):
-
 
     def get_submission(self,to_csv=True):
         self.test = load_data(train=False)
@@ -247,30 +251,39 @@ class EntityEmbedding(Model):
         return self.model.predict(features).flatten()
 
 
-class level1(object,file_path,config_path):
+class LevelOne(object):
+    '''models is a triple of models:
+        keys = 'lgbm','xgbm','catboost'
+        values = int - number of 
 
-    def __init__(self,parquet_path,config_path):
+    '''
+
+    def __init__(self,model_dict,parquet_path,config_path):
         self.parquet_path=parquet_path
-        self.config.path=config_path
-        self.models=[]
+        self.config_path=config_path
         self.manager=fem.FeatureManager(self.parquet_path,self.config_path)
+
+        kwargs={index,self.parquet_path,self.config_path}
+        self.models=[lgbmClassifier(**kwargs)]
         for model in self.models:
-            model.crawler.update_features(self.manager.feature_list_)
-    
-    def get_models(self):
-        self.manager.get_sample()
+            model.update_crawler_features(self.manager.feature_list_)
+
+    def learn_until(self,condition):
+        # condition must be {'number': int, 'threshold': float}. It asks for at least n leaves above a certain threshold.
         for model in self.models:
-            print('Feature learning with {} model')
-            feats=Model.crawler.get_features()
-            #update_score(manager.buildmodel.CVcrawl(stop_condition))
-        # stop condition can bea dict {n feature sets that aren't related : minimal score x)
-        # or the tree is full.
-        # use CV on a relatively low number of iterations to learn
+            print('Feature learning with {} model'.format(model))
+            while ~model.check_crawl_stop(condition):
+                feat_dict=model.get_features_to_learn()
+
+                print('Evaluating feature set: {}'.format(feat_dict['feats']))
+                train=self.manager.get_sample(feat.dict['feats'])
+                feat_dict['score']=model.CV_score(train)
+                model.update_learned_features(feat_dict)
         return self
 
-    def get_predicitons(self):
+    def get_level2_data(self):
         for model in self.models:
-            for leaf_features in model.crawler.leaves_
+            for features in model.get_engineered_features()
                 train=self.manager.get_training_data(leaf_features)
                 test=self.manager.get_test_data(leaf_features)
                 level1_feature=model.fit_predict(train,test)
@@ -282,22 +295,26 @@ class level1(object,file_path,config_path):
         return train,test
 
 
-class level2(object):
-    def __init__(self):
+class LevelTwo(object):
+    def __init__(self,data):
         # load level 1 dataframe feature by feature 
         # split training and testing data
 
-    def train models(self):
+    def train(self):
         #train one model of each
 
-    def get_predictions(self):
+    def get_level3_data(self):
         # apply trained models on the submission dataset from level1
 
-class level3(object):
-    def __init__(self):
+class LevelThree(object):
+    def __init__(self,data):
 
     def get_submission(self):
         # weighted average of results from level2
-        # submission to kaggle
-        # recording the score ?
+    return self
+
+    def submit_to_kaggle(self):
+        #kaggle competitions submit [-h] -c COMPETITION -f FILE -m MESSAGE
+
+    return self
 

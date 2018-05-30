@@ -55,9 +55,24 @@ class FeatureCrawler(object):
         else:
             print('creating empty feature graph')
             self.G=nx.DiGraph()
-            self.G.add_node(0,feats=self.null_set,score=0)
+            self.G.add_node(0,feats=self.null_set,score=None)
+
+    @staticmethod
+    def force_list(*arg):
+        ''' Takes a list of arguments and returns the same, 
+        but where all items were forced to a list.
+
+        example : list_1,list_2=force_list(item1,item2)
+        '''
+        Gen=(x if isinstance(x,list) else [x] for x in arg)
+        return Gen if len(arg)>1 else next(Gen)
 
     def is_better(self,a,b):
+        # returns True if a is better than b.
+        if a is None:
+            return False
+        elif b is None:
+            return True
         return a>b if self.gt else a<b
 
     def update_status(self):
@@ -72,6 +87,7 @@ class FeatureCrawler(object):
             Args- list of features
         '''
         print('adding features to graph')
+        feature_list=force_list(feature_list)
         current_features=chain(*[features for n,features in nx.get_node_atributes(self.G,'feats') if len(features)==1])
         new_features=[x for x in feature_list if x not in current_features]
         for x in new_features:
@@ -93,16 +109,13 @@ class FeatureCrawler(object):
     def get_unscored_features(self):
         if self.status_==1:
             print('All features were estimated, returning a random leaf')
-            choices=random.choice(self.leaves_)
+            node=random.choice(self.leaves_)
         # the graph G may already be topologically ordered from 0 by the renaming of the nodes
         else:
             unscored_subgraph=nx.subgraph([n for n,score in nx.get_node_attrubutes(self.G,'score') if score is None])
             choices=[n for n,deg in unscored_subgraph.in_degree if deg==0]
-        return make_node_dict(random.choice(choices))
-
-    def make_node_dict(self,node):
-        node_dict={'node':node,**self.G.node[node]}
-        return node_dict
+            node=random.choice(choices)
+        return {'node':node,**self.G.node[node]}
 
     def record_score(self,node_dict):
         # checks that the score that is about to be recorded corresponds to the given features
@@ -199,7 +212,7 @@ class FeatureManager(object):
             yaml.dump(feat_dict,File)
         #extracting raw index, target and sub file names before collecting the remaining features in an iterator
         extras={feat_dict['feat_initial'].pop(x):x for x,y in feat_dict['feat_initial'] if y is not None}
-        self.raw_index=pd.RangeIndex(extras['index'])
+        self.raw_index=pd.RangeIndex(int(extras['index']))
         self.target_file=extras['target']
         self.submission_file=extras['sub']
         self.feature_list_=chain(*[y for x,y in feature_dict.items()])
@@ -365,7 +378,7 @@ class FeatureManager(object):
         del([train,test]);gc.collect()
 
         print('saving featues, raw index, target and submission to parquet files')
-        initial_features={len(X.index):'index'}
+        initial_features={str(len(X.index)):'index'}
         for col in X:
             if col == 'is_attributed':
                 initial_features[col]='target'
