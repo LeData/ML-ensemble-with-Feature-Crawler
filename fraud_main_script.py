@@ -4,7 +4,7 @@ import numpy as np
 import yaml
 import os
 import gc
-from fraud_models import *
+import model_blender as bdr
 
 
 local_path='input/'
@@ -63,11 +63,11 @@ with open(local_path+'level1models.yaml','w') as File:
 # add new features to the config file of the faeture manager of level1
 
 # Level 1
-level1-LevelOne(model_dict,local_path,config_path)
+level1=bdr.LevelOne(model_dict,local_path,config_path)
 stopping_cond={'number':1,'threshold':0.85}
 level1.learn_until(stopping_cond)
-level2=LevelTwo(level1.get_level2_data(),model_list)
+level2=bdr.LevelTwo(level1.get_level2_data(),model_list)
 level2.train()
-level3=LevelThree(level2.get_level3_data())
+level3=bdr.LevelThree(level2.get_level3_data())
 level3.get_submission()
 level3.submit_to_kaggle()

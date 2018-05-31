@@ -1,8 +1,3 @@
-# make and save dataframe with features + engine + 50 round score as columns
-# add a columns checking if there isn't a model with the same features but less that has a bigger score.
-#
-
-
 import yaml
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -190,7 +185,7 @@ class XGBoostClassifier(Model):
         feat_importance.sort_values(ascending=False).to_csv('feature importance.csv')
         return self
 
-#this is not working yet, it was just copy-pasted here
+#this is not working yet, it was just copy-pasted here from another project
 class EntityEmbedding(Model):
 
     def __init__(self, X_train, y_train, X_val, y_val):
