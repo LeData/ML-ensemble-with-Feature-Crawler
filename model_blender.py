@@ -246,10 +246,10 @@ class EntityEmbedding(Model):
         return self.model.predict(features).flatten()
 
 
-class LevelOne(object):
+class LayerOne(object):
     '''models is a triple of models:
         keys = 'lgbm','xgbm','catboost'
-        values = int - number of 
+        values = int - 
 
     '''
 
@@ -276,7 +276,7 @@ class LevelOne(object):
                 model.update_learned_features(feat_dict)
         return self
 
-    def get_level2_data(self):
+    def get_layer2_data(self):
         for model in self.models:
             for features in model.get_engineered_features()
                 train=self.manager.get_training_data(leaf_features)
@@ -290,7 +290,7 @@ class LevelOne(object):
         return train,test
 
 
-class LevelTwo(object):
+class LayerTwo(object):
     def __init__(self,data):
         # load level 1 dataframe feature by feature 
         # split training and testing data
@@ -298,10 +298,10 @@ class LevelTwo(object):
     def train(self):
         #train one model of each
 
-    def get_level3_data(self):
+    def get_layer3_data(self):
         # apply trained models on the submission dataset from level1
 
-class LevelThree(object):
+class LayerThree(object):
     def __init__(self,data):
 
     def get_submission(self):
