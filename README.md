@@ -31,10 +31,10 @@ A **Manager** (class) which simplifies feature creation, light storage and fast 
 # Model Blender
 
 This module is a blending architechture for gradient boosted machines. It has 3 layers:
-1st layer: Takes a dataset and some given features and learns the best combinations of features for XGB, lightGBM and Catboost independently 
+- 1st layer: Takes a dataset and some given features and learns the best combinations of features for XGB, lightGBM and Catboost independently 
   through cross validation. Once a given score threshold has been reached of the whole feature space has been explored, returns a dataframe with all the predictions of the three models with the feature combinations found to be local maxima in the feature space.
-2nd layer: Trains 3 models on the predictions from layer 1. Returns a dataframe of 3 prediction columns.
-3rd layer: Blends the predictions of the 2nd layer using weighted averages. Returns a single prediction.
+- 2nd layer: Trains 3 models on the predictions from layer 1. Returns a dataframe of 3 prediction columns.
+- 3rd layer: Blends the predictions of the 2nd layer using weighted averages. Returns a single prediction.
 
 Note - hyper-parameter tuning is curerntly not part of the blender. Parameters must be given by hand.
 

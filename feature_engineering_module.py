@@ -60,12 +60,12 @@ class FeatureCrawler(object):
         # initiate with a baseline and score order (incr, decr)
         self.status_=0
         self.leaves_={}
-        self.file_=file_path+crawler_file+'.yaml'
+        self.file=file_path+crawler_file+'.yaml'
         self.gt=incr_score # defines whether better scores are defined with the greater than or lesser than operator.
         
         if os.path.isfile(self.file):
             print('loading graph from file')
-            self.G=nx.read_yaml(File)
+            self.G=nx.read_yaml(self.ile)
             self.update_status()
         else:
             print('creating empty feature graph')
@@ -94,7 +94,7 @@ class FeatureCrawler(object):
         #getting the proportion of non empty feature sets evaluated
         self.status_=mean([y is not None for x,y in nx.get_node_attributes(self.G,'score').items() if x!=0])
         self.leaves_={n:self.G.node[n]['score'] for n,deg in self.G.out_degree if deg==0 and self.G.node[n]['score'] is not None}
-        nx.write_yaml(self.G,File)
+        nx.write_yaml(self.G,self.file)
         return self
 
     def update_features(self,feature_list):
@@ -159,6 +159,10 @@ class FeatureCrawler(object):
 class FeatureManager(object):
     '''
     The methods to use here are:
+    get_sample()
+    get_sample_index()
+    get_training_data()
+    get_test_data()
 
     The attribute to look for are:
     feature_list_
@@ -170,10 +174,10 @@ class FeatureManager(object):
         self.feature_path=feature_path
         self.feature_list_=[]
         self.raw_index=[]
-        self.feature_generators={x:y for  x,y in inspect.getmembers(self, predicate=inspect.ismethod) if x.beginswith('feat_')}
+        self.feature_generators={x:y for  x,y in inspect.getmembers(self, predicate=inspect.ismethod) if x.startswith('feat_')}
         self.dict_file='{}FeatureManager_config.yaml'.format(config_path)
 
-        if os.file.isfile(self.dict_file):
+        if os.path.isfile(self.dict_file):
             print('loading feature dict')
             feature_dict=self.update_features()
         else:
@@ -224,16 +228,16 @@ class FeatureManager(object):
         with open(self.dict_file,'w') as File:
             yaml.dump(feat_dict,File)
         #extracting raw index, target and sub file names before collecting the remaining features in an iterator
-        extras={feat_dict['feat_initial'].pop(x):x for x,y in feat_dict['feat_initial'] if y is not None}
+        extras={feat_dict['feat_initial'].pop(x):x for x,y in list(feat_dict['feat_initial'].items()) if y is not None}
         self.raw_index=pd.RangeIndex(int(extras['index']))
         self.target_file=extras['target']
         self.submission_file=extras['sub']
-        self.feature_list_=chain(*[y for x,y in feature_dict.items()])
+        self.feature_list_=chain(*[y for x,y in feat_dict.items()])
         return self
 
-    def get_sample(self,features,sample_index=None):
+    def get_sample(self,features,prop=.5,sample_index=None):
         if sample_index is None:
-            data=self.get_sample_index(True)
+            data=self.get_sample_index(True,prop)
         else:
             data=pd.DataFrame(sample_index).join(self.get_feature_series('target'))
         for feat in features:
@@ -245,10 +249,13 @@ class FeatureManager(object):
         data=data.astype({'ip':np.uint32}).reset_index(drop=True)
         return data
 
-    def get_sample_index(self,add_target=False):
+    def get_sample_index(self,add_target=False,prop):
+        if prop==0:
+          print('Cannot create training set with 0 as proportion of positives, replacing by .5')
+          prop=.5
         y=get_feature_series('target') # beware, there may be an issue here if train and test_supplement overlap in time.
-        n=sum(~y)-sum(y) # number of negative target rows to remove to get to a 50/50 distribution in target values
-        y=y.drop(data[~data].sample(n=n,random_state=seed).index) #sub-sampling the training dataset
+        n=sum(~y)-sum(y)*(1/prop -1)
+        y=y.drop(y[~y].sample(n=n,random_state=seed).index) #sub-sampling the training dataset
         if add_target:
             return y
         return y.index
@@ -305,7 +312,7 @@ class FeatureManager(object):
 
         def load_csv(name):
 
-            file_path='{}{}.csv.zip'.format(self.path,name)
+            file_csv='{}{}.csv.zip'.format(self.path,name)
 
             # Defining dtypes
             types = {
@@ -381,13 +388,15 @@ class FeatureManager(object):
 
         print('saving featues, raw index, target and submission to parquet files')
         initial_features={str(len(X.index)):'index'}
+        if not os.path.exists(self.feature_dict_):
+            os.makedirs(self.feat_dict)
         for col in X:
             if col == 'is_attributed':
                 initial_features[col]='target'
-                X.pop(col)[lambda x: x>0].astype(bool).to_parquet('{}{}.pqt'.format(self.path,col))
+                X.pop(col)[lambda x: x>0].astype(bool).to_parquet('{}{}.pqt'.format(self.feature_path,col))
             elif col == 'click_id':
                 initial_features[col]='sub'
-                X.pop(col)[lambda x: x>0].astype(np.uint32).to_parquet('{}{}.pqt'.format(self.path,col)) #note that parquet 1.0 doesn't keep int32 anyhow, so it'll be int64
+                X.pop(col)[lambda x: x>0].astype(np.uint32).to_parquet('{}{}.pqt'.format(self.feature_path,col)) #note that parquet 1.0 doesn't keep int32 anyhow, so it'll be int64
             else:
                 initial_features[col]=None
                 X.pop(col).to_parquet('{}{}.pqt'.format(self.path,col))
