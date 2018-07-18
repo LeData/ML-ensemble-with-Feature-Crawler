@@ -3,10 +3,13 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 import feature_engineering_module as fem
 import pickle
+from abc import ABCMeta, abstractmethod
 
 class Model(object):
 
     seed=714
+
+    __metaclass__=ABCMeta
 
     def __init__(self,index,file_path,crawler_file,increasing_measure=True):
         self.train=[]

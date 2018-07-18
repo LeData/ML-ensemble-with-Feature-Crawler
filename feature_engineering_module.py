@@ -34,7 +34,6 @@ Manages feature creation and storage for fast loading and easy management throug
 ##
 ## TODO:
 ## 1 - take care of var type in the Manager. parquet 1.0 returns int64 for uint32
-## 2 - finish the wrapper of feature creation
 
 
 import pandas as pd
@@ -295,17 +294,6 @@ class FeatureManager(object):
             feature_series=pd.read_parquet(File) # index cannot be a range index here until all features have been merged.
         return feature_series
 
-    def wrapper_for_feat_methods(self):
-        #Not in use yet, but could be a wrapper out of it.
-        df=pd.DataFrame(index=self.raw_index)
-        for feat in all_col:
-            df=df.join(self.get_feature_series(feat))
-        
-        for feat in new_features.columns:
-            #add file name to feature_dict_
-            new_features[feat].to_parquet('{}.pqt'.format(feat))
-        return self
-
     def feat_initial(self):
 
         print('making parquet files of the dataset for quicker loading')
@@ -454,7 +442,6 @@ class FeatureManager(object):
             aggregation={aggregated:aggregator,'dummy_var':lambda x: x[-1]}
 
             print('computing rolling window')          
-            # Alternative approach, note that it will always return the biggest dtype, but we can't predict if float or int before hand.
             new_feature=(
                 pd.concat([(grp
                     .set_index(time_col)
@@ -466,9 +453,6 @@ class FeatureManager(object):
                 .drop([('dummy_var','<lambda>')],axis=1)
                 .reset_index(drop=True)
                 )
-
-            #to debug the transition from df to series
-            print(new_feature.head())
 
             if aggregators ==['count']:
                 new_feature=new_frame.astype(np.uint16)
