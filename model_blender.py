@@ -27,11 +27,11 @@ class Model(object):
                 return len({x:y for x,y in self.crawler.leaves_.items() if self.crawler.is_better(y,condition['threshold'])})>=condition['number']
 
     def get_features_to_learn(self):
-        feat_dict=self.crawler.get_unscored_features()
+        feat_dict=self.crawler.get_unscored_nodes()
         return feat_dict
 
-    def update_learned_features(self,features):
-        self.crawler.update_features(features)
+    def update_learned_features(self,feature_dict):
+        self.crawler.record_score(feature_dict)
         return self
 
     def CV_score(self,data):
@@ -261,8 +261,8 @@ class LayerOne(object):
         self.config_path=config_path
         self.manager=fem.FeatureManager(self.parquet_path,self.config_path)
 
-        kwargs={index,self.parquet_path,self.config_path}
-        self.models=[lgbmClassifier(**kwargs)]
+        args={self.parquet_path,self.config_path}
+        self.models=[lgbmClassifier(*args)]
         for model in self.models:
             model.update_crawler_features(self.manager.feature_list_)
 
@@ -286,6 +286,7 @@ class LayerOne(object):
                 test=self.manager.get_test_data(leaf_features)
                 level1_feature=model.fit_predict(train,test)
                 del(train,test);gc.collect()
+                #what is level1_feature.name?
                 with open(level1_feature.name,'w') as File:
                     level1_feature.to_parquet(File)
 
@@ -295,7 +296,7 @@ class LayerOne(object):
 
 class LayerTwo(object):
     def __init__(self,data):
-        # load level 1 dataframe feature by feature 
+        # load level 1 dataframe feature by feature
         # split training and testing data
 
     def train(self):

@@ -5,9 +5,9 @@ This module provides classes that help automate feature extraction and managemen
 A **FeatureCrawler** class which maintains a graph of possible feature combinations. It helps recursively explore discrete feature spaces to find independent optimized sets of features for blending, or the best combination of features given a starting feature set.
 
   - Methods:
-    - update_features(): takes a list of features and expands the feature space if new features are found
-    - get_unscored_features(): returns a list of features that hasn't been tested yet.
-    - record score(): takes in the score of a list of features and update the graph.
+    - update_graph(): takes a list of features and expands the feature graph if new features are found.
+    - get_unscored_node(): returns a list of features that hasn't been tested yet.
+    - record score(): takes in the score of a list of features and updates the graph.
     - prune(): removes all scored nodes in the periphery of the graph that aren't a global max. This should only be used if looking for 
                 a single model. Not good for blending.
   - Attributes:
@@ -103,6 +103,11 @@ Improving the predictive power of a given model requires to either feed more dat
 * Non linear variables - for linear models (logistic regression and SVC) (need numeric features)
 * other time series based variables.
 
-**// A first step towards production quality code //**
+**// Step towards production quality code //**
 
-This repository is meant to be used by others and I welcome any help in the development. I have taken this challenge as a chance to learn how to write better code more than a quest to get to the top of the leaderboard (which some achieve blending publicly posted models). I have read plenty about test driven development but haven't been able to implement it yet. I also would like to implement viz tools to understand at a glance how far along the feature crawler is and how fast the crawling goes. If this sound like something that you'd enjoy, please get in touch or submit PR directly.
+This repository is meant to be useful to others and I welcome any help in the development. I have taken this challenge as a chance to learn how to write better code more than a quest to get to the top of the leaderboard (which some achieve by blending publicly posted models). I have read plenty about test driven development but haven't been able to implement it yet. I also would like to implement visualization tools to the crawler to understand at a glance how far along it is and how fast the crawling goes. For example:
+- Proportion of graph scored vs number of rounds
+- Best Score vs number of rounds
+- Number of 'leaves' vs number of rounds
+- Distribution of feature representation
+If this sound like something that you'd enjoy doing, please get in touch or submit PR directly.
