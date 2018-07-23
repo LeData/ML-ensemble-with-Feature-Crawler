@@ -1,10 +1,9 @@
 import pandas as pd
 import numpy as np
 #import matplotlib.pyplot as plt
-import yaml
 import os
 import gc
-import model_blender as bdr
+import model_blender as bldr
 
 
 local_path='input/'
@@ -59,15 +58,18 @@ model_dict={'lgbm':lgb_params}
 with open(local_path+'level1models.yaml','w') as File:
     yaml.dump(model_dict,File)
 
-# level 0 (optional):
-# add new features to the config file of the faeture manager of level1
-
 # Level 1
-level1=bdr.LayerOne(model_dict,local_path,config_path)
+lvl1=bldr.LayerOne(model_dict,local_path,config_path)
 stopping_cond={'number':1,'threshold':0.85}
-level1.learn_until(stopping_cond)
-level2=bdr.LayerTwo(level1.get_level2_data(),model_list)
+lvl1.learn_until(stopping_cond)
+lvl1_output=lvl1.get_level2_data()
+
+# Level 2
+lvl2=bldr.LayerTwo(lvl1_output,model_list)
 level2.train()
-level3=bdr.LayerThree(level2.get_level3_data())
-level3.get_submission()
-level3.submit_to_kaggle()
+lvl2_output=level2.get_level3_data()
+
+# Level 3
+lvl3=bldr.LayerThree(lvl2_output)
+lvl3.get_submission()
+lvl3.submit_to_kaggle()

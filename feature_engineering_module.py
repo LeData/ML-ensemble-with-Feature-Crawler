@@ -17,8 +17,9 @@ FeatureManager (class):
 Manages feature creation and storage for fast loading and easy management through a configuration file. Currently only dealing with Binary Classification.
     Methods:
         set_downsample() - Turns on downsampling and generates a sample index.
-        get_training_data()
+        get_training_data() -
         get_test_data() -
+        get_all_data() -
         update_features() - update the feature list from the config file.
          
     Attributes:
@@ -26,13 +27,9 @@ Manages feature creation and storage for fast loading and easy management throug
     downsample_: boolean indicating the use of downsampling
 '''
 
-
-## This file defines the methods for feature engineering:
-## 
-##
 ## TODO:
-## 1 - take care of var type in the Manager. parquet 1.0 returns int64 for uint32
-## 2 - add verbose options
+## 1 - Finish update_types() parquet 1.0 returns int64 for uint32
+## 2 - add verbose option
 
 
 import pandas as pd
@@ -64,7 +61,7 @@ class FeatureCrawler(object):
         if os.path.isfile(self.file):
             print('loading graph from file')
             self.G=nx.read_yaml(self.ile)
-            self.update_status()
+            self.__update_status()
         else:
             print('creating empty feature graph')
             self.G=nx.DiGraph()
@@ -80,7 +77,7 @@ class FeatureCrawler(object):
         Gen=(x if isinstance(x,list) else [x] for x in arg)
         return Gen if len(arg)>1 else next(Gen)
 
-    def is_better(self,a,b):
+    def __is_better(self,a,b):
         # returns True if a is better than b.
         if a is None:
             return False
@@ -88,7 +85,7 @@ class FeatureCrawler(object):
             return True
         return a>b if self.gt else a<b
 
-    def update_status(self):
+    def __update_status(self):
         #getting the proportion of non empty feature sets evaluated
         self.status_=mean([y is not None for x,y in nx.get_node_attributes(self.G,'score').items() if x!=0])
         self.leaves_={n:self.G.node[n]['score'] for n,deg in self.G.out_degree if deg==0 and self.G.node[n]['score'] is not None}
@@ -117,7 +114,7 @@ class FeatureCrawler(object):
             
             self.G=nx.convert_node_labels_to_integers(self.G)
 
-        self.update_status()
+        self.__update_status()
         return self
 
     def get_unscored_node(self):
@@ -139,9 +136,9 @@ class FeatureCrawler(object):
              print('The features do not correspond to the given node')
         else:
             self.G.node[node]['score']=node_dict.pop('score')
-            if any([self.is_better(self.G.node[x]['score'],self.G.node[node]['score']) for x in nx.ancestors(self.G,node)]):
+            if any([self.__is_better(self.G.node[x]['score'],self.G.node[node]['score']) for x in nx.ancestors(self.G,node)]):
                 self.G.remove_nodes_from({node}|nx.descendants(self.G,node))
-        self.update_status()
+        self.__update_status()
         return self
     
     def prune(self):
@@ -149,25 +146,13 @@ class FeatureCrawler(object):
         # to use only if needing the single best model, not good for bagging/blending.
         while len({score for leaf,score in self.leaves_.items()})>1:
             max_score=max(nx.get_node_attributes(self.G,'score').items(), key=operator.itemgetter(1))[1]
-            suboptimal_features={feats for feats,score in self.leaves_.items() if self.is_better(max_score,score)}
+            suboptimal_features={feats for feats,score in self.leaves_.items() if self.__is_better(max_score,score)}
             suboptimal_leaves=[n for n,feat in nx.get_node_attributes(self.G,'feats') if feats in suboptimal_features]
             self.G.remove_nodes_from(suboptimal_leaves)
-            self.update_status()          
+            self.__update_status()          
         return self
 
 class FeatureManager(object):
-    '''
-    The methods to use here are:
-    set_downsample() - Turns on downsampling and generates a sample index.
-    get_training_data()
-    get_test_data() -
-    update_features() - update the feature list from the config file.
-
-    The attribute to look for are:
-    feature_list_ - List of features available
-    downsample_ - Boolean indicating if downsampling is on
-
-    '''
 
     def __init__(self,feature_path='features/',config_path=''):
         # keeps a ditionary of available feature generators
@@ -237,10 +222,6 @@ class FeatureManager(object):
         self.feature_list_=chain(*[y for x,y in __feat_dict.items()])
         return self
 
-    def update_types(self,data):
-        data=data.astype({'ip':np.uint32})
-        return data
-
     def __get_series(self,feature):
         if feature=='sub':
             feature=self.submission_feature
@@ -267,18 +248,22 @@ class FeatureManager(object):
             df=df.reset_index(drop=True) #int to range index
         return df
 
-    def __get_ML_data(self,features,test=False,prop=1):
+    def __get_ML_data(self,features,test=False):
         __force_list(features)
         if test:
-            df=self.__get_series('sub')
+            extra=self.__get_series('sub')
         else:
-            df=self.__get_series('target')
+            extra=self.__get_series('target')
             if downsample_:
-                df=df.loc[self.sample_index]
+                extra=extra.loc[self.sample_index]
         
-        df=df.join(self.__get_dataframe(features,df.index))
+        df=self.__get_dataframe(features,extra.index)
         df=self.update_types(df)
-        return df
+        return df,extra
+
+    def update_types(self,data):
+        data=data.astype({'ip':np.uint32})
+        return data
 
     def set_downsample(self,prop=.2):
         self.downsample_=True
@@ -293,6 +278,9 @@ class FeatureManager(object):
                 .index)
             .index)
         return self
+
+    def get_all_data(self,features):
+        return self.__get_dataframe(features)
 
     def get_training_data(self,features):
         return self.__get_ML_data(features,False)
@@ -540,10 +528,10 @@ class FeatureManager(object):
 '''
     def __feat_sample(self,*args):
 
-        all_col= #list of needed columns, most likely from *args
+        features= #list of needed columns, most likely from *args
 
         df=pd.DataFrame(index=self.raw_index)
-        for feat in all_col:
+        for feat in features:
             df=df.join(self.__get_series(feat))
 
         feature_name= #setting up the name of the feature
