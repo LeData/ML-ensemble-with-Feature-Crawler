@@ -30,14 +30,19 @@ Manages feature creation and storage for fast loading and easy management throug
 ## TODO:
 ## 1 - Finish update_types() parquet 1.0 returns int64 for uint32
 ## 2 - add verbose option
+## 3 - avoid downsampling when it is impossible
 
 
 import pandas as pd
+import numpy as np
 import networkx as nx
 import random
 import yaml
+import os
+import gc
 import inspect
 from itertools import chain
+import generators
 
 class FeatureCrawler(object):
     # This class is a graph crawler for feature engineering. It maintains a graph of all sets of features,
@@ -60,15 +65,14 @@ class FeatureCrawler(object):
         
         if os.path.isfile(self.file):
             print('loading graph from file')
-            self.G=nx.read_yaml(self.ile)
+            self.G=nx.read_yaml(self.file)
             self.__update_status()
         else:
             print('creating empty feature graph')
             self.G=nx.DiGraph()
             self.G.add_node(0,feats=self.null_set,score=None)
 
-    @staticmethod
-    def __force_list(*arg):
+    def __force_list(self,*arg):
         ''' Takes a list of arguments and returns the same, 
         but where all items were forced to a list.
 
@@ -87,25 +91,24 @@ class FeatureCrawler(object):
 
     def __update_status(self):
         #getting the proportion of non empty feature sets evaluated
-        self.status_=mean([y is not None for x,y in nx.get_node_attributes(self.G,'score').items() if x!=0])
+        self.status_=np.mean([y is not None for x,y in nx.get_node_attributes(self.G,'score').items() if x!=0])
         self.leaves_={n:self.G.node[n]['score'] for n,deg in self.G.out_degree if deg==0 and self.G.node[n]['score'] is not None}
         nx.write_yaml(self.G,self.file)
-        print('Progress: {0.status_}, leaves: {0.leaves_}.'.format(self))
+        #print('Crawler status: progress: {0.status_}, leaves: {0.leaves_}.'.format(self))
         return self
 
     def update_graph(self,feature_list):
         ''' Takes a list of available features and updates the graph with the ones that weren't included yet
             Args- list of features
         '''
-        print('adding features to graph')
-        feature_list=__force_list(feature_list)
-        current_features=chain(*[features for n,features in nx.get_node_atributes(self.G,'feats') if len(features)==1])
+        feature_list=self.__force_list(feature_list)
+        current_features=list(chain(*[features for n,features in nx.get_node_attributes(self.G,'feats').items() if len(features)==1]))
         new_features=[x for x in feature_list if x not in current_features]
         for x in new_features:
-            self.unit_graph.node['t']['feats']=set(x)
+            print('Adding feature {} to the feature space.'.format(x))
+            self.unit_graph.node['t']['feats']={x}
             self.G=nx.algorithms.operators.cartesian_product(self.G,self.unit_graph)
-            self.unit_graph.node['t']['feats']=null_set
-            
+            self.unit_graph.node['t']['feats']=self.null_set
             new_labels={x:y[0]|y[1] for x,y in nx.get_node_attributes(self.G,'feats').items()}
             nx.set_node_attributes(self.G,new_labels,'feats')
             
@@ -120,10 +123,11 @@ class FeatureCrawler(object):
     def get_unscored_node(self):
         if self.status_==1:
             print('All features were estimated, returning a random leaf')
-            node=random.choice(self.leaves_)
+            node=random.choice(list(self.leaves_))
         # the graph G may already be topologically ordered from 0 by the renaming of the nodes
         else:
-            unscored_subgraph=nx.subgraph([n for n,score in nx.get_node_attrubutes(self.G,'score') if score is None])
+            unscored_nodes=[n for n,score in nx.get_node_attributes(self.G,'score').items() if (score is None) and (n>0)]
+            unscored_subgraph=self.G.subgraph(unscored_nodes)
             choices=[n for n,deg in unscored_subgraph.in_degree if deg==0]
             node=random.choice(choices)
         return {'node':node,**self.G.node[node]}
@@ -140,7 +144,17 @@ class FeatureCrawler(object):
                 self.G.remove_nodes_from({node}|nx.descendants(self.G,node))
         self.__update_status()
         return self
-    
+
+    def check_condition(self,condition):
+        # condition must be {'number': int, 'threshold': float}. It asks for at least n leaves above a certain threshold.
+        num_leaves=len(self.leaves_)
+        print('The crawler explored {}% of the feature space.'.format(self.status_*100))
+        print('There are {} leaves available.'.format(num_leaves))
+        if self.status_==1:                
+            return True
+        else:
+            return len({x:y for x,y in self.leaves_.items() if self.__is_better(y,condition['threshold'])})>=condition['number']
+
     def prune(self):
         # Recursively removes all scored leaves that are not global max
         # to use only if needing the single best model, not good for bagging/blending.
@@ -152,27 +166,29 @@ class FeatureCrawler(object):
             self.__update_status()          
         return self
 
-class FeatureManager(object):
+class FeatureManager(generators.FeatureGenerators):
 
-    def __init__(self,feature_path='features/',config_path=''):
+    def __init__(self,feature_path='features/',config_path='',seed=714):
         # keeps a ditionary of available feature generators
         self.feature_path=feature_path
         self.feature_list_=[]
         self.raw_index=[]
+        self.target_feature=None
+        self.submission_feature=None
         self.sample_index=self.raw_index
         self.downsample_=False
-        self.feature_generators={x:y for  x,y in inspect.getmembers(self, predicate=inspect.ismethod) if x.startswith('__feat_')}
+        self.seed=seed
+        self.feature_generators={x:y for  x,y in inspect.getmembers(self, predicate=inspect.ismethod) if x.startswith('feat_')}
         self.dict_file='{}FeatureManager_config.yaml'.format(config_path)
 
         if os.path.isfile(self.dict_file):
             print('loading feature dict')
             feature_dict=self.update_features()
         else:
-            print('no config file in {}'.format(config_path))
-            feature_dict=self.__feat_initial()
+            print('No config file in {}, generating initial features.'.format(config_path))
+            feature_dict=self.feat_initial()
         self.__save_feature_dict(feature_dict)
 
-    @staticmethod
     def __force_list(*arg):
         ''' Takes a list of arguments and returns the same, 
         but where all items were forced to a list.
@@ -186,15 +202,16 @@ class FeatureManager(object):
         '''
             The feature dictionary is of the format
             {'method_name': {feature_name: kwargs}
-            it is saved in yaml and parsed for new features. Any method name that doesn't exist or start with '__feat_' will be dropped.
+            it is saved in yaml and parsed for new features. Any method name that doesn't exist or start with 'feat_' will be dropped.
             Initial features are a dict key:None except for target and test/subscription features.
             To add new features, manually add to the file '{method: {new_XX: kwargs}}' where XX is an integer
         '''
         with open(self.dict_file,'r') as File:
             temp_dict=yaml.load(File)
+        #removing instructions
         temp_dict={x:y for x,y in temp_dict.items() if x in self.feature_generators}
         for method in temp_dict:
-            if method!='__feat_initial':
+            if method!='feat_initial':
                 new_features={}
                 for feature in temp_dict[method]:
                     if feature.beginswith('new_'):
@@ -209,17 +226,18 @@ class FeatureManager(object):
                 temp_dict[method].update(new_features)
         return temp_dict
 
-    def __save_feature_dict(self,__feat_dict):
+    def __save_feature_dict(self,feat_dict):
 
-        __feat_dict['instructions']='Add new features by adding a row to the table of the function you \'re using, with the arguments you want and \'new_XX\' where XX is an integer as feature_name.'
+        feat_dict['instructions']='Add new features by adding a row to the table of the function you \'re using, with the arguments you want and \'new_XX\' where XX is an integer as feature_name.'
         with open(self.dict_file,'w') as File:
-            yaml.dump(__feat_dict,File)
+            yaml.dump(feat_dict,File)
+        feat_dict.pop('instructions')
         #extracting raw index, target and sub file names before collecting the remaining features in an iterator
-        extras={__feat_dict['__feat_initial'].pop(x):x for x,y in list(__feat_dict['__feat_initial'].items()) if y is not None}
+        extras={feat_dict['feat_initial'].pop(x):x for x,y in list(feat_dict['feat_initial'].items()) if y is not None}
         self.raw_index=pd.RangeIndex(int(extras['index']))
-        self.target_file=extras['target']
-        self.submission_file=extras['sub']
-        self.feature_list_=chain(*[y for x,y in __feat_dict.items()])
+        self.target_feature=extras['target']
+        self.submission_feature=extras['sub']
+        self.feature_list_=list(chain(*[y for x,y in feat_dict.items()]))
         return self
 
     def __get_series(self,feature):
@@ -227,34 +245,38 @@ class FeatureManager(object):
             feature=self.submission_feature
         elif feature=='target':
             feature=self.target_feature
-        elif feat not in self.feature_list:
+        elif feature not in self.feature_list_:
             print('feature not available')
             return None
 
         feature_parquet='{}{}.pqt'.format(self.feature_path,feature)
-        print('loading from {}'.format(feature_parquet))
+        #print('loading from {}'.format(feature_parquet))
         with open(feature_parquet,'rb') as File:
             feature_series=pd.read_parquet(File) # index cannot be a range index here until all features have been merged.
-        return feature_series
+        return feature_series.iloc[:,0]
 
-    def __get_dataframe(self,features,index=self.raw_index):
+    def __get_dataframe(self,features,index=None):
+        reset=False
+        if index is None:
+            reset=True
+            index=self.raw_index
         df=pd.DataFrame(index=index)
         for feat in features:
-            if feat not in self.feature_dict_:
+            if feat not in self.feature_list_:
                 print('feature not available')
             else:
                 df=df.join(self.__get_series(feat))
-        if index==self.raw_index:
+        if reset:
             df=df.reset_index(drop=True) #int to range index
         return df
 
     def __get_ML_data(self,features,test=False):
-        __force_list(features)
+        self.__force_list(features)
         if test:
             extra=self.__get_series('sub')
         else:
             extra=self.__get_series('target')
-            if downsample_:
+            if self.downsample_:
                 extra=extra.loc[self.sample_index]
         
         df=self.__get_dataframe(features,extra.index)
@@ -262,7 +284,7 @@ class FeatureManager(object):
         return df,extra
 
     def update_types(self,data):
-        data=data.astype({'ip':np.uint32})
+        data=data
         return data
 
     def set_downsample(self,prop=.2):
@@ -271,10 +293,10 @@ class FeatureManager(object):
         if not 0 < prop <1:
           print('Downsampling proportion not valid, using .2')
           prop=.2
-        n=sum(~y)-sum(y)*(1/prop -1)
+        n=np.sum(~y)-np.sum(y)*(1/prop -1)
         self.sample_index=(y.
             drop(y[~y]
-                .sample(n=n,random_state=seed)
+                .sample(n=int(n),random_state=self.seed)
                 .index)
             .index)
         return self
@@ -288,256 +310,44 @@ class FeatureManager(object):
     def get_test_data(self,features):
         return self.__get_ML_data(features,True)
 
-    def __feat_initial(self):
-        # target and test/submission files must only be of the corresponding 
-        # index in the main dataframe
+'''   def __feat_initial(self):
+       # target and test/submission files must only be of the corresponding 
+       # index in the main dataframe
+       # print('making parquet files of the dataset for quicker loading')
+       def load_csv(name):
 
-        print('making parquet files of the dataset for quicker loading')
+           file_csv='{}{}.csv'.format(self.feature_path,name)
 
-        def load_csv(name):
+           # Defining dtypes
+           types = {}
 
-            file_csv='{}{}.csv.zip'.format(self.path,name)
+           # Defining csv file reading parameters
+           read_args={
+               'dtype':types,
+               }
 
-            # Defining dtypes
-            types = {
-                    'ip':np.uint32,
-                    'app': np.uint16,
-                    'os': np.uint16,
-                    'device': np.uint16,
-                    'channel':np.uint16,
-                    'click_time': object
-                    }
+           print('Loading {}'.format(file_csv))
+           with open(file_csv,'rb') as File:
+               df=pd.read_csv(File,**read_args)
+           print(df.info())
+           return df
 
-            if name=='test':
-                types['click_id']= np.uint32
-            else:
-                types['is_attributed']='bool'
+       print('Loading data')
+       X=load_csv('exercise')
 
-            # Defining csv file reading parameters
-            read_args={
-                'parse_dates':['click_time'],
-                'infer_datetime_format':True,
-                'index_col':'click_time',
-                'usecols':list(types.keys()),
-                'dtype':types,
-                'compression':'zip',
-                'engine':'c',
-                'sep':','
-                }
+       print('saving featues, raw index, target and submission to parquet files')
+       initial_features={str(len(X.index)):'index'}
+       for col in X:
+           if col == 'Class':
+               initial_features[col]='target'
+               X.pop(col)[lambda x: x>=0].astype(bool).to_frame().to_parquet('{}{}.pqt'.format(self.feature_path,col))
+           elif col == 'test_id':
+               initial_features[col]='sub'
+               X.pop(col)[lambda x: x>=0].astype(np.uint32).to_frame().to_parquet('{}{}.pqt'.format(self.feature_path,col)) #note that parquet 1.0 doesn't keep int32 anyhow, so it'll be int64
+           else:
+               initial_features[col]=None
+               X.pop(col).fillna(0).to_frame().to_parquet('{}{}.pqt'.format(self.feature_path,col))
+       del(X);gc.collect()
+       return {'feat_initial':initial_features}
 
-            print('Loading {}'.format(file_csv))
-            with open(file_csv,'rb') as File:
-                df=(pd
-                    .read_csv(File,**read_args)
-                    .tz_localize('UTC')
-                    .tz_convert('Asia/Shanghai')
-                )
-            return df
-
-        print('merging testing and supplement data')
-        test=load_csv('test')
-        test1=test.loc[test.index.hour.isin([12,13,14]),:]
-        test2=test.loc[test.index.hour.isin([17,18,19]),:]
-        test3=test.loc[test.index.hour.isin([21,22,23]),:]
-        del(test);gc.collect()
-
-        supplement=load_csv('test_supplement').assign(click_id=-1)
-        supplement1=supplement.loc[:test1.index.min()-one_sec,:]
-        supplement2=supplement.loc[test1.index.max()+one_sec:test2.index.min()-one_sec,:]
-        supplement3=supplement.loc[test2.index.max()+one_sec:test3.index.min()-one_sec,:]
-        supplement4=supplement.loc[:test3.index.min()-one_sec,:]
-        del(supplement);gc.collect()
-
-        test=(pd
-            .concat([supplement1,test1,supplement2,test2,supplement3,test3,supplement4])
-            .assign(is_attributed=-1)
-            .astype({'is_attributed':np.int8})
-            )
-
-        del(supplement1,test1,supplement2,test2,supplement3,test3,supplement4);gc.collect()
-        
-        print('merging with training data')
-        train=(load_csv('train')
-            .assign(click_id=-1)
-            .astype({'is_attributed':np.int8})
-            )
-
-        X=(pd.concat([train,test])
-            .reset_index(drop=True)
-            .assign(day=lambda x: x.click_time.dt.day.values.astype(np.int8),
-                hour=lambda x: x.click_time.dt.hour.values.astype(np.int8))
-        )
-
-        del([train,test]);gc.collect()
-
-        print('saving featues, raw index, target and submission to parquet files')
-        initial_features={str(len(X.index)):'index'}
-        if not os.path.exists(self.feature_dict_):
-            os.makedirs(self.__feat_dict)
-        for col in X:
-            if col == 'is_attributed':
-                initial_features[col]='target'
-                X.pop(col)[lambda x: x>=0].astype(bool).to_parquet('{}{}.pqt'.format(self.feature_path,col))
-            elif col == 'click_id':
-                initial_features[col]='sub'
-                X.pop(col)[lambda x: x>=0].astype(np.uint32).to_parquet('{}{}.pqt'.format(self.feature_path,col)) #note that parquet 1.0 doesn't keep int32 anyhow, so it'll be int64
-            else:
-                initial_features[col]=None
-                X.pop(col).to_parquet('{}{}.pqt'.format(self.path,col))
-        del(X);gc.collect()
-        return {'__feat_initial':initial_features}
-
-    def __feat_window(self,grouped,aggregated='dummy_var',aggregator='count',dt=None):
-        ''' Returns a dataframe with the original index and rolling windows of dt minutes of the aggregated columns,
-        per unique tuple of the grouped features, calculated with a given aggregator. The advantage of only returning the new values only is that one
-        can then join them as one wishes and chain them in a pipeline.
-
-        Warning ! At the moment, the dataframe passed must be starting at 0 and without gaps for the join to work.
-        
-            Args:
-            grouped (list/string): column(s) to group by.
-            aggregated (string): column to aggregate on the rolling window.
-            aggregator (string): method to aggregate by.
-            dt (int) : window size, in minutes
-            time_col (datetime): column to use for the windows
-            pickle_name (str): file name to save/load the new features.
-
-        Returns:
-            pd.DataFrame with similar index as input: rolling windows of the aggregated featured, relative to the grouped (i.e. fixed) ones.
-        '''
-        grouped,aggregated,aggregator=__force_list(grouped,aggregated,aggregator)
-        features=grouped+aggregated
-        # deal with the case where all_col isn't a subset of feature_list_
-
-       
-
-        df=self.__get_dataframe(features)
-
-        if dt is None:
-            print('performing pivot')
-            feature_name='{}_{}_by_{}'.format(aggregator,aggregated,'_'.join(grouped))
-
-            if aggregator==['count']:
-                df['dummy_var']=1
-            new_feature=(df
-                        .groupby(grouped)
-                        .transform(aggregation)
-                        .rename(columns={'dummy_var':feature_name})
-                        .loc[:,feature_name]
-                       )
-            # not always necessary, so find a better way to deal with types.
-            if aggregators==['count']:
-                new_feature=new_feature.astype(np.uint16)
-
-        else:
-            time_col='click_time'
-            df=df.join(self.__get_series(time_col))
-            dt=str(dt)+'T'
-            aggregation={aggregated:aggregator,'dummy_var':lambda x: x[-1]}
-
-            print('computing rolling window')          
-            new_feature=(
-                pd.concat([(grp
-                    .set_index(time_col)
-                    .rolling(window=dt)
-                    .agg(aggregation)
-                    ) for name,grp in df.assign(dummy_var=lambda x:x.index.values).groupby(grouped)
-                    ])
-                .sort_values(by=('dummy_var','<lambda>'))
-                .drop([('dummy_var','<lambda>')],axis=1)
-                .reset_index(drop=True)
-                )
-
-            if aggregators ==['count']:
-                new_feature=new_frame.astype(np.uint16)
-            else:
-                new_feature=new_frame.astype(np.float16)
-
-            # example name 5T_os_count_by_ip
-            new_feature.columns=['{}_'.format(dt)+'_'.join(list(col)+['by']+grouped) for col in new_feature.columns]
-            feature_name=new_feature.columns[0]
-            new_feature=new_feature[feature_name]
-
-        del(df);gc.collect()
-        return new_feature
-
-    def __feat_delta(self,grouped,offset=-1):
-        grouped=__force_list(grouped)
-        features=grouped+['click_time']
-
-        df=self.__get_dataframe(features)
-
-        if offset<0:
-            feature_name='next_click_by_{}'.format('_'.join(grouped))
-        else:
-            feature_name='previous_click_by_{}'.format('_'.join(grouped))
-
-        # I notices in other works that assigning on an existing column can be very time/ressource expensive, avoided it, at the price of memory load
-        new_feature=(df
-           .assign(int_time=lambda x: x.click_time.astype(np.int64)//10**9)
-           #.astype({'int_time':np.uint32}) #add this to optimize memory usage instead of speed
-           .assign(click_delta=lambda x: x.groupby(grouped).int_time.shift(offset)-x.int_time)
-           .fillna(-10)
-           .assign(click_delta=lambda x: (x.next_click+10))
-           #.astype({'click_delta':np.uint32}) #add this to optimize memory usage instead of speed
-           .rename(columns={'click_delta':feature_name})
-           .loc[:,feature_name]
-           .reset_index(drop=True)
-          )
-
-        #add file name to feature_dict_
-        del(df);gc.collect()
-        return new_feature
-
-    def __feat_fourrier(self,grouped,dt=10):
-
-        grouped=__force_list(grouped)
-        features=grouped+['click_time']
-
-        df=self.__get_dataframe(features)
-
-        def fourrier_agg(data):
-            if len(data)>0:
-                A=pd.DataFrame(data).resample('20s').count()
-                A=A-A.mean()
-                if A.max().values>0:
-                    A=A/A.max()
-                Fk=np.fft.fftshift(np.fft.fft(A)/len(A))
-                fourrier_std=np.std(np.absolute(Fk)**2)*10000
-                del(A);gc.collect()
-            else:
-                fourrier_std=0
-            return fourrier_std.astype(np.int32)
-        
-        print('computing fourrier transform spread')
-        time='{}Min'.format(dt)
-        feature_name='{}_fourrier_by_{}'.format(time,'_'.join(grouped))
-        new_feature=(df.set_index('click_time')
-                .assign(dummy_var=1)
-                #.astype({'dummy_var':np.uint16}) #add this to optimize memory usage instead of speed
-                .groupby(grouped+[pd.Grouper(freq=time)])
-                .transform(fourrier_agg)
-                .rename(columns={'dummy_var':feature_name})
-                .loc[:,feature_name]
-                #.reset_index(drop=True)
-        )
-        print('if the index here is range, delete the reset_index line in the code',new_feature.index)
-        del(df);gc.collect()
-        return new_feature
-
-'''
-    def __feat_sample(self,*args):
-
-        features= #list of needed columns, most likely from *args
-
-        df=pd.DataFrame(index=self.raw_index)
-        for feat in features:
-            df=df.join(self.__get_series(feat))
-
-        feature_name= #setting up the name of the feature
-
-        new_feature= #Computation of the new feature. remember to rename it with feature_name
-
-        del(df);gc.collect()
-        return new_feature
 '''

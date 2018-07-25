@@ -1,12 +1,14 @@
 ## TODO
 ## 1- Add a iteration based condition for learn_until()
-## 2- Manage the target feature for the models
+## 2 - get a seed shared with the models in the blender
+## 3 - Manage downsample
 
 
 import yaml
 import gc
 import os
 import pandas as pd
+import numpy as np
 from sklearn.model_selection import train_test_split
 import feature_engineering_module as fem
 import pickle
@@ -19,16 +21,16 @@ class Model(object):
 
     __metaclass__=ABCMeta
 
-    def __init__(self,file_path,crawler_file,increasing_measure=True):
+    def __init__(self,files_path,crawler_file,increasing_measure=True):
         self.X_train=[]
         self.y=[]
         self.X_test=[]
         self.crawler=fem.FeatureCrawler(files_path,crawler_file,increasing_measure)
 
-    def set_training_data(self,X_train,y_train,split_frac=default_split)
+    def set_training_data(self,X_train,y_train,split_frac=default_split):
         self.X_train=X_train
         self.y_train=y_train
-        self.__pre_process(train=True,split_frac)
+        self.__pre_process(train=True,split_frac=split_frac)
         return self
 
     def set_test_data(self,X_test):
@@ -44,7 +46,7 @@ class Model(object):
     def __pre_process(self,train=True,split_frac=default_split):
         if train:
             print('making the training and evaluation pools')
-            X_train,y_train,X_valid,y_valid=train_test_split(self.X_train, self.y_train), test_size=split_frac, random_state=self.seed, stratify=self.y_train)
+            X_train,y_train,X_valid,y_valid=train_test_split(self.X_train, self.y_train, test_size=split_frac, random_state=self.seed, stratify=self.y_train)
             self.train=self.__transform_to_native_file(X_train,y_train)
             self.valid=self.__transform_to_native_file(X_valid,y_valid)
         else:
@@ -54,13 +56,8 @@ class Model(object):
 
     def check_crawl_stop(self,condition):
         # condition must be {'number': int, 'threshold': float}. It asks for at least n leaves above a certain threshold.
-        num_leaves=len(self.crawler.leaves_)
-        print('The crawler explored {}% of the feature space.'.format(self.crawler.status*100))
-        print('There are {} leaves available.'.format(num_leaves))
-        if self.crawler.status==1:                
-            return True
-        else:
-            return len({x:y for x,y in self.crawler.leaves_.items() if self.crawler.is_better(y,condition['threshold'])})>=condition['number']
+        stop=self.crawler.check_condition(condition)        
+        return stop
 
     def get_learning_features(self):
         feat_dict=self.crawler.get_unscored_node()
@@ -72,6 +69,11 @@ class Model(object):
 
     def update_learned_features(self,feature_dict):
         self.crawler.record_score(feature_dict)
+        return self
+
+    def update_feature_space(self,feature_list):
+        print('updating the feature space.')
+        self.crawler.update_graph(feature_list)
         return self
 
     @abstractmethod
@@ -89,7 +91,7 @@ class Model(object):
         # predict output for X_test
         pass
  
-   @abstractmethod
+    @abstractmethod
     def get_submission(self):
         # get a submission ready file for Kaggle contests
         pass
@@ -102,30 +104,32 @@ class Model(object):
 
 class lgbmClassifier(Model):
 
-    def __init__(self,params,file_path,crawler_file):
-        import lightgbm as lgb
-        super().__init__(file_path,crawler_file)
+    def __init__(self,params,files_path,crawler_file):
+        self.lgb=__import__('lightgbm')
+        super().__init__(files_path,crawler_file)
         self.params=params
         #pd.Series(params).to_csv('parameters.csv')
 
     def __transform_to_native_file(self,X,y=None):
         print('Creating the lgbDataset')
         if y is not None:
-            return lgb.Dataset(data=X,label=y,free_raw_data=True)
+            return self.lgb.Dataset(data=X,label=y,free_raw_data=True)
         else:
             return X
 
-    def fit(self,X_train,y_train,split_frac=default_split):
+    def fit(self,X_train,y_train,split_frac=None):
+        if split_frac is None:
+            split_frac=self.default_split
         self.set_training_data(X_train,y_train)
         print('training model')
-        self.model=lgb.train(self.params, self.train, num_boost_round= 2000,early_stopping_rounds= 150,
+        self.model=self.lgb.train(self.params, self.train, num_boost_round= 2000,early_stopping_rounds= 150,
         valid_sets=[self.train,self.valid], verbose_eval=50)
         #self.model.save_model('lgbm_model.txt')
         return self
 
     def CV_score(self,X_train,y_train):
         self.train=self.__transform_to_native_file(X_train,y_train)
-        eval_hist=self.model.cv(params,self.train,num_boost_round=50,nfold=3)
+        eval_hist=self.lgb.cv(self.params,self.train,num_boost_round=50,nfold=3)
         score=np.max(eval_hist[self.params['metric']+'-mean'])
         return score
 
@@ -160,9 +164,9 @@ class lgbmClassifier(Model):
 
 class CatClassifier(Model):
 
-    def __init__(self,params,file_path,crawler_file):
+    def __init__(self,params,files_path,crawler_file):
         from catboost import CatBoostClassifier,Pool
-        super().__init__(file_path,crawler_file)
+        super().__init__(files_path,crawler_file)
         self.model=CatBoostClassifier(**params)
 
     def __transform_to_native_file(self,X,y):
@@ -184,7 +188,6 @@ class CatClassifier(Model):
         return self
 
     def get_submission(self):
-        self.test = 
         submission=self.test.pop('click_id')
         self.__pre_process('test')
         submission['prediction']=self.model.predict_proba(self.test)[:,1]
@@ -201,9 +204,9 @@ class CatClassifier(Model):
 
 class XGBoostClassifier(Model):
 
-    def __init(self,params,file_path,crawler_file):
+    def __init(self,params,files_path,crawler_file):
         import xgboost as xgb
-        super().__init__(file_path,crawler_file)
+        super().__init__(files_path,crawler_file)
         self.model=xgb.XGBClassifier(**params)
 
     def __transform_to_native_file(self,X,y):
@@ -219,7 +222,6 @@ class XGBoostClassifier(Model):
         return self
 
     def get_submission(self):
-        self.test =
         submission=self.test.pop('click_id')
         self.__pre_process('test')
         submission['prediction']=self.model.predict_proba(self.test)[:,1]
@@ -306,31 +308,31 @@ class LayerOne(object):
         self.config_path=config_path
 
         print('Setting up the Feature Manager')
-        self.manager=fem.FeatureManager(self.parquet_path,self.config_path)
-        print('Setting up the Models')
-        self.models=[lgbmClassifier(self.config_path,'lvl1_lgbm')
-]        for model in self.models:
+        self.manager=fem.FeatureManager(self.parquet_path,self.config_path,)
+        print('Setting up the models')
+        self.models=[lgbmClassifier(model_dict['lgbm'],self.config_path,'lvl1_lgbm')]
+        for model in self.models:
             print('Updating the Feature Crawler for {}'.format(model))
-            model.update_crawler_features(self.manager.feature_list_)
+            model.update_feature_space(self.manager.feature_list_)
 
     def learn_until(self,condition):
         # condition must be {'number': int, 'threshold': float}. 
         # It asks for at least n leaves above a certain threshold.
         for model in self.models:
             print('Feature learning with {} model'.format(model))
-            self.manager.set_downsample(0.2)
-            while ~model.check_crawl_stop(condition):
+            #id self.downsample_:
+                #self.manager.set_downsample(0.2)
+            while not model.check_crawl_stop(condition):
                 feat_dict=model.get_learning_features()
-
                 print('Evaluating feature set: {}'.format(feat_dict['feats']))
-                X_train,y_train=self.manager.get_training_data(feat.dict['feats'])
-                feat_dict['score']=model.CV_score(train)
+                X_train,y_train=self.manager.get_training_data(feat_dict['feats'])
+                feat_dict['score']=model.CV_score(X_train,y_train.values)
                 model.update_learned_features(feat_dict)
         return self
 
     def get_layer2_data(self):
         for model in self.models:
-            for features in model.get_blending_features()
+            for features in model.get_blending_features():
                 X_train,y_train=self.manager.get_training_data(features)
                 model.fit(X_train,y_train)
                 del(X_train,y_train);gc.collect()
@@ -351,22 +353,25 @@ class LayerTwo(object):
     def __init__(self,data):
         # load level 1 dataframe feature by feature
         # split training and testing data
+        self.data=data
 
     def train(self):
         #train one model of each
+        return self
 
     def get_layer3_data(self):
         # apply trained models on the submission dataset from level1
+        return self
 
 class LayerThree(object):
     def __init__(self,data):
+        self.data=data
 
     def get_submission(self):
         # weighted average of results from level2
-    return self
+        return self
 
     def submit_to_kaggle(self):
         #kaggle competitions submit [-h] -c COMPETITION -f FILE -m MESSAGE
-
-    return self
+        return self
 
