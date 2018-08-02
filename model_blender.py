@@ -69,6 +69,7 @@ class Model(object):
         return feat_dict_list
 
     def update_learned_features(self,feature_dict):
+        self.verboseprint('Submitting score to crawler')
         self.crawler.record_score(feature_dict)
         return self
 
@@ -106,7 +107,7 @@ class lgbmClassifier(Model):
 
     def __init__(self,params,files_path,crawler_file,verbose=False):
         self.lgb=__import__('lightgbm')
-        super().__init__(files_path,crawler_file,verbose)
+        super().__init__(files_path,crawler_file,verbose=verbose)
         self.params=params
         #pd.Series(params).to_csv('parameters.csv')
 

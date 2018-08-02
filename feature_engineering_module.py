@@ -28,7 +28,8 @@ Manages feature creation and storage for fast loading and easy management throug
 
 ## TODO:
 ## 1 - Finish update_types() parquet 1.0 returns int64 for uint32
-## 2 - avoid downsampling when it is impossible
+## 2 - Fix the kwargs in the yaml file of update_features()
+## 3 - avoid downsampling when it is impossible
 
 
 import pandas as pd
@@ -154,6 +155,7 @@ class FeatureCrawler(object):
         num_leaves=len(self.leaves_)
         self.verboseprint('The crawler explored {}% of the feature space.'.format(self.status_*100))
         self.verboseprint('There are {} leaves available.'.format(num_leaves))
+        print({x:y for x,y in self.leaves_.items() if self.__is_better(y,condition['threshold'])})
         if self.status_==1:
             return True
         else:
@@ -207,27 +209,32 @@ class FeatureManager(generators.FeatureGenerators):
         '''
             The feature dictionary is of the format
             {'method_name': {feature_name: kwargs}
-            it is saved in yaml and parsed for new features. Any method name that doesn't exist or start with 'feat_' will be dropped.
+            it is saved in yaml and parsed for new features. Any method name that doesn't exist or start with 'feat_' have no effect.
             Initial features are a dict key:None except for target and test/subscription features.
             To add new features, manually add to the file '{method: {new_XX: kwargs}}' where XX is an integer
         '''
         with open(self.dict_file,'r') as File:
             temp_dict=yaml.load(File)
         #removing instructions
-        temp_dict={x:y for x,y in temp_dict.items() if x in self.feature_generators}
-        for method in temp_dict:
+        temp_dict={x:y for x,y in temp_dict.items() if x !='instructions'}
+        #setting up the list of existing features
+        self.feature_list_=[a for a,b in temp_dict['feat_initial'].items() if b is None]
+        self.feature_list_+=[feat for method,feats in temp_dict.items() if method!='feat_initial' 
+            for feat,args in feats.items() if not feat.startswith('new_')]
+        for method,feats in temp_dict.items():
             if method!='feat_initial':
                 new_features={}
-                for feature in temp_dict[method]:
-                    if feature.beginswith('new_'):
+                for feature in list(feats):
+                    if feature.startswith('new_'):
                         #check for duplicates, we don't want to compute something that already exists 
                         kwargs=temp_dict[method].pop(feature)
-                        new_feature=self.feature_generators[method](**kwargs)
-                        new_features[new_feature.name]=kwargs
-
+                        new_feature=feature[4:]
+                        new_features[new_feature]=kwargs
                         self.verboseprint('saving parquet file')
-                        new_feature.to_parquet('{}{}.pqt'.format(self.feature_path,feature_name))
-                        del(new_feature);gc.collect()
+                        (self.feature_generators[method](**kwargs)
+                            .rename(new_feature)
+                            .to_frame()
+                            .to_parquet('{}{}.pqt'.format(self.feature_path,new_feature)))
                 temp_dict[method].update(new_features)
         return temp_dict
 
@@ -245,7 +252,7 @@ class FeatureManager(generators.FeatureGenerators):
         self.feature_list_=list(chain(*[y for x,y in feat_dict.items()]))
         return self
 
-    def __get_series(self,feature):
+    def get_series(self,feature):
         if feature=='sub':
             feature=self.submission_feature
         elif feature=='target':
@@ -270,7 +277,7 @@ class FeatureManager(generators.FeatureGenerators):
             if feat not in self.feature_list_+['sub','target']:
                 self.verboseprint('feature not available')
             else:
-                df=df.join(self.__get_series(feat))
+                df=df.join(self.get_series(feat))
         if reset:
             df=df.reset_index(drop=True) #int to range index
         return df
@@ -278,9 +285,9 @@ class FeatureManager(generators.FeatureGenerators):
     def __get_ML_data(self,features,test=False):
         self.__force_list(features)
         if test:
-            extra=self.__get_series('sub')
+            extra=self.get_series('sub')
         else:
-            extra=self.__get_series('target')
+            extra=self.get_series('target')
             if self.downsample_:
                 extra=extra.loc[self.sample_index]
         
@@ -294,7 +301,7 @@ class FeatureManager(generators.FeatureGenerators):
 
     def set_downsample(self,prop=.2):
         self.downsample_=True
-        y=self.__get_series('target') # beware, there may be an issue here if train and test_supplement overlap in time.
+        y=self.get_series('target') # beware, there may be an issue here if train and test_supplement overlap in time.
         if not 0 < prop <1:
           self.verboseprint('Downsampling proportion not valid, using .2')
           prop=.2
