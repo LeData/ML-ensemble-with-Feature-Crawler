@@ -7,7 +7,9 @@ A **FeatureCrawler** class which maintains a graph of possible feature combinati
   - Methods:
     - update_graph(): takes a list of features and expands the feature graph if new features are found.
     - get_unscored_node(): returns a list of features that hasn't been tested yet.
-    - record score(): takes in the score of a list of features and updates the graph.
+    - record_score(): takes in the score of a list of features and updates the graph.
+    - get_leaves_features(): returns a list of sets of features for the current leaves of the feature space.
+    - check_condition(): checks if a certain condition on the features space is met.
     - prune(): removes all scored nodes in the periphery of the graph that aren't a global max. This should only be used if looking for 
                 a single model. Not good for blending.
   - Attributes:
@@ -17,6 +19,7 @@ A **FeatureCrawler** class which maintains a graph of possible feature combinati
 A **FeatureManager** class which simplifies feature creation, light storage and fast retrieval through a configuration file and parquet format. Currently only dealing with Binary Classification.
     
   - Methods:
+    - update_features():
     - get_sample(): returns a balanced dataset sample with the requested features. If an index is provided, merely returns the features on that index.
     - get_sample_index(): returns the index of a balanced sample, if target=True, also returns a sample series of the target variable.
     - get_training_data(): returns the whole training data with the given features.

@@ -21,36 +21,37 @@ class Model(object):
 
     __metaclass__=ABCMeta
 
-    def __init__(self,files_path,crawler_file,increasing_measure=True):
+    def __init__(self,files_path,crawler_file,increasing_measure=True,verbose=False):
         self.X_train=[]
         self.y=[]
         self.X_test=[]
         self.crawler=fem.FeatureCrawler(files_path,crawler_file,increasing_measure)
+        self.verboseprint= print if verbose else lambda *a,**k:None
 
     def set_training_data(self,X_train,y_train,split_frac=default_split):
-        self.X_train=X_train
-        self.y_train=y_train
+        self.train=(X_train,y_train)
         self.__pre_process(train=True,split_frac=split_frac)
+        #self.transform_to_native_file(X_train,y_train)
         return self
 
     def set_test_data(self,X_test):
-        self.X_test=X_test
+        self.test=X_test
         self.__pre_process(train=False)
         return self
 
     @abstractmethod
-    def __transform_to_native_file(self):
+    def transform_to_native_file(self,X,y):
         #transform training or test data to the native file of the model
         pass
 
     def __pre_process(self,train=True,split_frac=default_split):
         if train:
-            print('making the training and evaluation pools')
-            X_train,y_train,X_valid,y_valid=train_test_split(self.X_train, self.y_train, test_size=split_frac, random_state=self.seed, stratify=self.y_train)
-            self.train=self.__transform_to_native_file(X_train,y_train)
-            self.valid=self.__transform_to_native_file(X_valid,y_valid)
+            self.verboseprint('making the training and evaluation pools')
+            X_train,X_valid,y_train,y_valid=train_test_split(self.train[0], self.train[1], test_size=split_frac, random_state=self.seed, stratify=self.train[1])
+            self.train=self.transform_to_native_file(X_train,y_train)
+            self.valid=self.transform_to_native_file(X_valid,y_valid)
         else:
-            self.test=self.__transform_to_native_file(self.test,False)
+            self.test=self.transform_to_native_file(self.test)
         gc.collect()
         return self
 
@@ -64,7 +65,7 @@ class Model(object):
         return feat_dict
 
     def get_blending_features(self):
-        feat_dict_list=self.crawler.leaves_
+        feat_dict_list=self.crawler.get_leaves_features()
         return feat_dict_list
 
     def update_learned_features(self,feature_dict):
@@ -72,7 +73,7 @@ class Model(object):
         return self
 
     def update_feature_space(self,feature_list):
-        print('updating the feature space.')
+        self.verboseprint('updating the feature space.')
         self.crawler.update_graph(feature_list)
         return self
 
@@ -101,17 +102,16 @@ class Model(object):
         # get feature importance
         pass
 
-
 class lgbmClassifier(Model):
 
-    def __init__(self,params,files_path,crawler_file):
+    def __init__(self,params,files_path,crawler_file,verbose=False):
         self.lgb=__import__('lightgbm')
-        super().__init__(files_path,crawler_file)
+        super().__init__(files_path,crawler_file,verbose)
         self.params=params
         #pd.Series(params).to_csv('parameters.csv')
 
-    def __transform_to_native_file(self,X,y=None):
-        print('Creating the lgbDataset')
+    def transform_to_native_file(self,X,y=None):
+        self.verboseprint('Creating the lgbDataset')
         if y is not None:
             return self.lgb.Dataset(data=X,label=y,free_raw_data=True)
         else:
@@ -121,14 +121,14 @@ class lgbmClassifier(Model):
         if split_frac is None:
             split_frac=self.default_split
         self.set_training_data(X_train,y_train)
-        print('training model')
-        self.model=self.lgb.train(self.params, self.train, num_boost_round= 2000,early_stopping_rounds= 150,
+        self.verboseprint('training model')
+        self.model=self.lgb.train(self.params, self.train, num_boost_round= 2000,early_stopping_rounds= 250,
         valid_sets=[self.train,self.valid], verbose_eval=50)
         #self.model.save_model('lgbm_model.txt')
         return self
 
     def CV_score(self,X_train,y_train):
-        self.train=self.__transform_to_native_file(X_train,y_train)
+        self.train=self.transform_to_native_file(X_train,y_train)
         eval_hist=self.lgb.cv(self.params,self.train,num_boost_round=50,nfold=3)
         score=np.max(eval_hist[self.params['metric']+'-mean'])
         return score
@@ -144,15 +144,15 @@ class lgbmClassifier(Model):
         return self
 
     def predict(self,data):
-        self.__set_test_data(data)
+        self.set_test_data(data)
         result=self.model.predict(self.test,num_iteration=self.model.best_iteration)
         return result
 
     def plot_feature_importance(self):
-        print("Features importance...")
+        self.verboseprint("Features importance...")
         gain = self.model.feature_importance('gain')
         ft = pd.DataFrame({'feature':self.model.feature_name(), 'split':self.model.feature_importance('split'), 'gain':100 * gain / gain.sum()}).sort_values('split', ascending=False)
-        print(ft.head(25))
+        self.verboseprint(ft.head(25))
         plt.figure()
         ft[['feature','gain']].head(25).plot(kind='barh', x='feature', y='gain', legend=False, figsize=(10, 20))
         plt.gcf().savefig('features_importance.png')
@@ -161,23 +161,22 @@ class lgbmClassifier(Model):
         plt.gcf().savefig('features_importance.png')
         return self
 
+class CatBoostClassifier(Model):
 
-class CatClassifier(Model):
+    def __init__(self,params,files_path,crawler_file,verbose=False):
+        self.cat= __import__(catboost)
+        super().__init__(files_path,crawler_file,verbose)
+        self.model=self.cat.CatBoostClassifier(**params)
 
-    def __init__(self,params,files_path,crawler_file):
-        from catboost import CatBoostClassifier,Pool
-        super().__init__(files_path,crawler_file)
-        self.model=CatBoostClassifier(**params)
-
-    def __transform_to_native_file(self,X,y):
-        print('Creating the pool')
+    def transform_to_native_file(self,X,y):
+        self.verboseprint('Creating the pool')
         if y is not None:
-            return Pool(data=X,label=y)
+            return self.cat.Pool(data=X,label=y)
         else:
-            return Pool(data=X)
+            return self.cat.Pool(data=X)
 
     def fit(self):    
-        print('training model')
+        self.verboseprint('training model')
         self.model.fit(
             self.train,
             eval_set=self.valid,
@@ -198,165 +197,148 @@ class CatClassifier(Model):
     def feature_importance(self):
         feat_importance=pd.Series(index=self.test.columns)
         feat_importance['importance']=self.model.feature_importances_
-        print(feat_importance)
+        self.verboseprint(feat_importance)
         feat_importance.sort_values(ascending=False).to_csv('feature importance.csv')
         return self
 
 class XGBoostClassifier(Model):
 
-    def __init(self,params,files_path,crawler_file):
-        import xgboost as xgb
-        super().__init__(files_path,crawler_file)
-        self.model=xgb.XGBClassifier(**params)
+    def __init__(self,params,files_path,crawler_file,verbose=False):
+        self.xgb=__import__('xgboost')
+        super().__init__(files_path,crawler_file,verbose)
+        self.params=params
 
-    def __transform_to_native_file(self,X,y):
-        print('Creating the DMatrix')
+    def transform_to_native_file(self,X,y):
+        self.verboseprint('Creating the DMatrix')
         if y is not None:
-            return xgb.DMatrix(data=X,label=y,free_raw_data=True)
+            return self.xgb.DMatrix(data=X,label=y,free_raw_data=True)
         else:
             pass
 
-    def fit(self):    
-        print('training model')
-        self.model.fit(X,y)
+    def fit(self,X_train,y_train,split_frac=None):
+        if split_frac is None:
+            split_frac=self.default_split
+        self.set_training_data(X_train,y_train)
+        self.verboseprint('training model')
+        self.model=self.xgb.train(self.params,self.train,num_boost_rounds=2000,early_stopping_rounds=250,
+            evals=[self.train,self.valid], verbose_eval=50)
         return self
 
-    def get_submission(self):
-        submission=self.test.pop('click_id')
-        self.__pre_process('test')
-        submission['prediction']=self.model.predict_proba(self.test)[:,1]
-        submission.to_csv('xgb_sub.csv',index=False)
+    def CV_score(self,X_train,y_train):
+        self.train=self.transform_to_native_file(X_train,y_train)
+        eval_hist=self.xgb.cv(self.params,self.train,num_boost_round=50,nfold=3)
+        score=np.max(eval_hist[self.params['metric']+'-mean'])
+        return score
+
+    def get_submission(self,X_test,to_csv=True):
+        self.set_test_data(X_test)
+        submission=pd.DataFrame(data={'click_id':self.test.pop('click_id')})
+        self.__pre_process(train=False)
+        submission['is_attributed']=self.model.predict_proba(self.test,num_iteration=self.model.best_iteration)
+        if ~to_csv:
+            return submission['is_attributed'].values()
+        submission.to_csv('lgbm_sub.csv',index=False)
         return self
 
-    def feature_importance(self):
+    def plot_feature_importance(self):
         feat_importance=self.model.feature_importances_
         xgb.plot_importance(self.model)
         plt.show()
         feat_importance.sort_values(ascending=False).to_csv('feature importance.csv')
         return self
 
-#this is not working yet, it was just copy-pasted here from another project
-class EntityEmbedding(Model):
-
-    def __init__(self, X_train, y_train, X_val, y_val):
-        from keras.models import Sequential
-        from keras.models import Model as KerasModel
-        from keras.layers import Input, Dense, Activation, Reshape
-        from keras.layers import Concatenate
-        from keras.layers.embeddings import Embedding
-        from keras.callbacks import ModelCheckpoint
-        super().__init__()
-        self.epochs = 10
-        self.checkpointer = ModelCheckpoint(filepath="best_model_weights.hdf5", verbose=1, save_best_only=True)
-        self.__build_keras_model()
-        self.fit(X_train, y_train, X_val, y_val)
-
-    def preprocessing(self, X):
-        X_list = split_features(X)
-        return X_list
-
-    def __build_keras_model(self,feat_embed_shapes):
-        ''' The feat_embed_shapes dictionary contains the categorical features to embed as keys
-        and a tuple of dimensions defining the embedding as values
-        '''
-        inputs={}
-        outputs={}
-        for key in feat_embed_shapes:
-            inputs[key] = Input(shape=(1,))
-            outputs[key] = Embedding(feat_embed_shapes[key][0], feat_embed_shapes[key][1], name='{}_embedding'.format(key))(input[key])
-            outputs[key] = Reshape(target_shape=(feat_embed_shapes[key][1],))(output[key])
-
-        input_model = inputs.values()
-        output_embeddings = outputs.values()
-
-        output_model = Concatenate()(output_embeddings)
-        output_model = Dense(1000, kernel_initializer="uniform")(output_model)
-        output_model = Activation('relu')(output_model)
-        output_model = Dense(500, kernel_initializer="uniform")(output_model)
-        output_model = Activation('relu')(output_model)
-        output_model = Dense(1)(output_model)
-        output_model = Activation('sigmoid')(output_model)
-
-        self.model = KerasModel(inputs=input_model, outputs=output_model)
-
-        self.model.compile(loss='mean_absolute_error', optimizer='adam')
-
-
-    def fit(self, X_train, y_train, X_val, y_val):
-        self.model.fit(self.preprocessing(X_train), y_train,
-                       validation_data=(self.preprocessing(X_val), y_val),
-                       epochs=self.epochs, batch_size=128,
-                       # callbacks=[self.checkpointer],
-                       )
-        # self.model.load_weights('best_model_weights.hdf5')
-        print("Result on validation data: AUC -", self.evaluate(X_val, y_val))
-
-    def guess(self, features):
-        features = self.preprocessing(features)
-        return self.model.predict(features).flatten()
-
-
 class LayerOne(object):
-    '''models is a triple of models:
-        keys = 'lgbm','xgbm','catboost'
-        values = int - 
-
+    '''LayerOne takes a dictionary of models and their parameters current available models:
+        'lgbm','xgb','catboost'
     '''
 
-    def __init__(self,model_dict,parquet_path,config_path):
+    def __init__(self,model_dict,parquet_path,config_path,verbose=False):
         self.parquet_path=parquet_path
         self.config_path=config_path
 
-        print('Setting up the Feature Manager')
-        self.manager=fem.FeatureManager(self.parquet_path,self.config_path,)
-        print('Setting up the models')
-        self.models=[lgbmClassifier(model_dict['lgbm'],self.config_path,'lvl1_lgbm')]
-        for model in self.models:
-            print('Updating the Feature Crawler for {}'.format(model))
-            model.update_feature_space(self.manager.feature_list_)
+        self.verboseprint= print if verbose else lambda *a,**k:None
+
+        self.verboseprint('Setting up the Feature Manager')
+        self.manager=fem.FeatureManager(self.parquet_path,self.config_path,verbose)
+        self.verboseprint('Setting up the models')
+
+        self.models={}
+        for name,params in model_dict.items():
+            if name == 'lgbm':
+                self.models[name]=lgbmClassifier(params,self.config_path,'lvl1_'+name,verbose)
+            elif name == 'catboost':
+                self.models[name]=CatBoostClassifier(params,self.config_path,'lvl1_'+name,verbose)
+            elif name == 'xgb':
+                self.models[name]=XGBoostClassifier(params,self.config_path,'lvl1_'+name,verbose)
+            else:
+                self.verboseprint('{} model does not exist'.format(name))
+                continue
+            self.verboseprint('Updating the Feature Crawler for {}'.format(name))
+            self.models[name].update_feature_space(self.manager.feature_list_)
 
     def learn_until(self,condition):
         # condition must be {'number': int, 'threshold': float}. 
         # It asks for at least n leaves above a certain threshold.
-        for model in self.models:
-            print('Feature learning with {} model'.format(model))
+        for name,model in self.models.items():
+            self.verboseprint('Feature learning with {} model'.format(name))
+            learning_curve=[model.crawler.status_]
             #id self.downsample_:
                 #self.manager.set_downsample(0.2)
             while not model.check_crawl_stop(condition):
                 feat_dict=model.get_learning_features()
-                print('Evaluating feature set: {}'.format(feat_dict['feats']))
+                self.verboseprint('Evaluating feature set: {}'.format(feat_dict['feats']))
                 X_train,y_train=self.manager.get_training_data(feat_dict['feats'])
                 feat_dict['score']=model.CV_score(X_train,y_train.values)
                 model.update_learned_features(feat_dict)
+                learning_curve.append(model.crawler.status_)
+            pd.DataFrame(learning_curve).plot(title='learning curve for {}'.format(name))
         return self
 
-    def get_layer2_data(self):
-        for model in self.models:
+    def get_lvl2_data(self):
+        no_feature=self.manager.get_all_data(['sub','target'])
+        lvl2_data={'sub':no_feature.iloc[:,0],'target':no_feature.iloc[:,1]}
+        for name,model in self.models.items():
             for features in model.get_blending_features():
                 X_train,y_train=self.manager.get_training_data(features)
                 model.fit(X_train,y_train)
                 del(X_train,y_train);gc.collect()
 
                 data=self.manager.get_all_data(features)
-                level1_feature=model.predict(data)
+                feature_name='_'.join([name]+list(features))
+                lvl2_data[feature_name]=model.predict(data)
                 del(data);gc.collect()
-                # what is level1_feature.name?
-                with open(level1_feature.name,'w') as File:
-                    level1_feature.to_parquet(File)
+        output=pd.DataFrame(lvl2_data)
+
 
         # Add sub and target features
-        # Make predictions on new sample + sub file for level 2
-        return train,test
-
+        #with open('{}lvl1_output.pqt'.format(self.parquet_path),'w') as File:
+        #            output.to_parquet(File)
+        return output
 
 class LayerTwo(object):
-    def __init__(self,data):
+    def __init__(self,data,model_dict,verbose=False):
         # load level 1 dataframe feature by feature
         # split training and testing data
         self.data=data
+        self.verboseprint= self.verboseprint if verbose else lambda *a,**k:None
+        self.models={}
+        for name,params in model_dict.items():
+            if name == 'lgbm':
+                self.models[name]=lgbmClassifier(params,self.config_path,'lvl2_'+name,verbose)
+            elif name == 'catboost':
+                self.models[name]=CatBoostClassifier(params,self.config_path,'lvl2_'+name,verbose)
+            elif name == 'xgb':
+                self.models[name]=XGBoostClassifier(params,self.config_path,'lvl2_'+name,verbose)
+            else:
+                self.verboseprint('{} model does not exist'.format(name))
+                continue
+
 
     def train(self):
         #train one model of each
+        for name,model in self.models:
+            print(name)
+
         return self
 
     def get_layer3_data(self):
@@ -364,8 +346,9 @@ class LayerTwo(object):
         return self
 
 class LayerThree(object):
-    def __init__(self,data):
+    def __init__(self,data,verbose=False):
         self.data=data
+        self.verboseprint= self.verboseprint if verbose else lambda *a,**k:None
 
     def get_submission(self):
         # weighted average of results from level2

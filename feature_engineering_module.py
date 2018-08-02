@@ -7,11 +7,10 @@ Uses graphs to manages and explore a (discrete) feature space. Automatically rem
         update_graph(): takes a list of features and expands the feature space if new features are found
         get_unscored_node(): returns a feature set that has not been scored yet.
         record score(): takes in the score of a list of features and update the graph.
-        prune(): removes all scored nodes in the periphery of the graph that aren't a global max. This should only be used if looking for 
-                a single model. Not good for blending.
+        prune(): removes all scored nodes in the periphery of the graph whose score is below a certain threshold.
     - Attributes:
         status_ : percentage crawled / current proportion of scored nodes in the graph
-        leaves_ : {current peripheral nodes that were scored : their score}
+        leaves_ : {scored nodes with no children : their score}
 
 FeatureManager (class):
 Manages feature creation and storage for fast loading and easy management through a configuration file. Currently only dealing with Binary Classification.
@@ -29,8 +28,7 @@ Manages feature creation and storage for fast loading and easy management throug
 
 ## TODO:
 ## 1 - Finish update_types() parquet 1.0 returns int64 for uint32
-## 2 - add verbose option
-## 3 - avoid downsampling when it is impossible
+## 2 - avoid downsampling when it is impossible
 
 
 import pandas as pd
@@ -56,19 +54,21 @@ class FeatureCrawler(object):
     nx.set_node_attributes(unit_graph,{'s':null_set,'t':null_set},'feats')
     nx.set_node_attributes(unit_graph,{'s':True,'t':False},'score')
     
-    def __init__(self,file_path,crawler_file,incr_score=True):
+    def __init__(self,file_path,crawler_file,incr_score=True,verbose=False):
         # initiate with a baseline and score order (incr, decr)
         self.status_=0
         self.leaves_={}
         self.file=file_path+crawler_file+'.yaml'
         self.gt=incr_score # defines whether better scores are defined with the greater than or lesser than operator.
         
+        self.verboseprint= print if verbose else lambda *a,**k:None
+
         if os.path.isfile(self.file):
-            print('loading graph from file')
+            self.verboseprint('loading graph from file')
             self.G=nx.read_yaml(self.file)
             self.__update_status()
         else:
-            print('creating empty feature graph')
+            self.verboseprint('creating empty feature graph')
             self.G=nx.DiGraph()
             self.G.add_node(0,feats=self.null_set,score=None)
 
@@ -94,7 +94,7 @@ class FeatureCrawler(object):
         self.status_=np.mean([y is not None for x,y in nx.get_node_attributes(self.G,'score').items() if x!=0])
         self.leaves_={n:self.G.node[n]['score'] for n,deg in self.G.out_degree if deg==0 and self.G.node[n]['score'] is not None}
         nx.write_yaml(self.G,self.file)
-        #print('Crawler status: progress: {0.status_}, leaves: {0.leaves_}.'.format(self))
+        #self.verboseprint('Crawler status: progress: {0.status_}, leaves: {0.leaves_}.'.format(self))
         return self
 
     def update_graph(self,feature_list):
@@ -105,7 +105,7 @@ class FeatureCrawler(object):
         current_features=list(chain(*[features for n,features in nx.get_node_attributes(self.G,'feats').items() if len(features)==1]))
         new_features=[x for x in feature_list if x not in current_features]
         for x in new_features:
-            print('Adding feature {} to the feature space.'.format(x))
+            self.verboseprint('Adding feature {} to the feature space.'.format(x))
             self.unit_graph.node['t']['feats']={x}
             self.G=nx.algorithms.operators.cartesian_product(self.G,self.unit_graph)
             self.unit_graph.node['t']['feats']=self.null_set
@@ -122,7 +122,7 @@ class FeatureCrawler(object):
 
     def get_unscored_node(self):
         if self.status_==1:
-            print('All features were estimated, returning a random leaf')
+            self.verboseprint('All features were estimated, returning a random leaf')
             node=random.choice(list(self.leaves_))
         # the graph G may already be topologically ordered from 0 by the renaming of the nodes
         else:
@@ -132,12 +132,16 @@ class FeatureCrawler(object):
             node=random.choice(choices)
         return {'node':node,**self.G.node[node]}
 
+    def get_leaves_features(self):
+        leaves_features=[self.G.node[n]['feats'] for n in self.leaves_]
+        return leaves_features
+
     def record_score(self,node_dict):
         # checks that the score that is about to be recorded corresponds to the given features
         # adds it to the graph and removes node and all descendants if  the score wasn't improved from all its predecessors.
         node=node_dict.pop('node')
         if self.G.node[node]['feats']!=node_dict.pop('feats'):
-             print('The features do not correspond to the given node')
+             self.verboseprint('The features do not correspond to the given node')
         else:
             self.G.node[node]['score']=node_dict.pop('score')
             if any([self.__is_better(self.G.node[x]['score'],self.G.node[node]['score']) for x in nx.ancestors(self.G,node)]):
@@ -148,27 +152,26 @@ class FeatureCrawler(object):
     def check_condition(self,condition):
         # condition must be {'number': int, 'threshold': float}. It asks for at least n leaves above a certain threshold.
         num_leaves=len(self.leaves_)
-        print('The crawler explored {}% of the feature space.'.format(self.status_*100))
-        print('There are {} leaves available.'.format(num_leaves))
-        if self.status_==1:                
+        self.verboseprint('The crawler explored {}% of the feature space.'.format(self.status_*100))
+        self.verboseprint('There are {} leaves available.'.format(num_leaves))
+        if self.status_==1:
             return True
         else:
-            return len({x:y for x,y in self.leaves_.items() if self.__is_better(y,condition['threshold'])})>=condition['number']
+            return len([x for x,y in self.leaves_.items() if self.__is_better(y,condition['threshold'])])>=condition['number']
 
-    def prune(self):
+    def prune(self,threshold):
         # Recursively removes all scored leaves that are not global max
         # to use only if needing the single best model, not good for bagging/blending.
-        while len({score for leaf,score in self.leaves_.items()})>1:
-            max_score=max(nx.get_node_attributes(self.G,'score').items(), key=operator.itemgetter(1))[1]
-            suboptimal_features={feats for feats,score in self.leaves_.items() if self.__is_better(max_score,score)}
-            suboptimal_leaves=[n for n,feat in nx.get_node_attributes(self.G,'feats') if feats in suboptimal_features]
-            self.G.remove_nodes_from(suboptimal_leaves)
-            self.__update_status()          
+        to_prune=[leaf for leaf,score in self.leaves_.items() if self.__is_better(threshold,score)]
+        while len(to_prune)>0:
+            self.G.remove_nodes_from(to_prune)
+            self.__update_status()
+            to_prune=[leaf for leaf,score in self.leaves_.items() if self.__is_better(threshold,score)]
         return self
 
 class FeatureManager(generators.FeatureGenerators):
 
-    def __init__(self,feature_path='features/',config_path='',seed=714):
+    def __init__(self,feature_path='features/',config_path='',seed=714,verbose=False):
         # keeps a ditionary of available feature generators
         self.feature_path=feature_path
         self.feature_list_=[]
@@ -181,11 +184,13 @@ class FeatureManager(generators.FeatureGenerators):
         self.feature_generators={x:y for  x,y in inspect.getmembers(self, predicate=inspect.ismethod) if x.startswith('feat_')}
         self.dict_file='{}FeatureManager_config.yaml'.format(config_path)
 
+        self.verboseprint= print if verbose else lambda *a,**k:None
+
         if os.path.isfile(self.dict_file):
-            print('loading feature dict')
+            self.verboseprint('loading feature dict')
             feature_dict=self.update_features()
         else:
-            print('No config file in {}, generating initial features.'.format(config_path))
+            self.verboseprint('No config file in {}, generating initial features.'.format(config_path))
             feature_dict=self.feat_initial()
         self.__save_feature_dict(feature_dict)
 
@@ -220,7 +225,7 @@ class FeatureManager(generators.FeatureGenerators):
                         new_feature=self.feature_generators[method](**kwargs)
                         new_features[new_feature.name]=kwargs
 
-                        print('saving parquet file')
+                        self.verboseprint('saving parquet file')
                         new_feature.to_parquet('{}{}.pqt'.format(self.feature_path,feature_name))
                         del(new_feature);gc.collect()
                 temp_dict[method].update(new_features)
@@ -246,11 +251,11 @@ class FeatureManager(generators.FeatureGenerators):
         elif feature=='target':
             feature=self.target_feature
         elif feature not in self.feature_list_:
-            print('feature not available')
+            self.verboseprint('feature not available')
             return None
 
         feature_parquet='{}{}.pqt'.format(self.feature_path,feature)
-        #print('loading from {}'.format(feature_parquet))
+        #self.verboseprint('loading from {}'.format(feature_parquet))
         with open(feature_parquet,'rb') as File:
             feature_series=pd.read_parquet(File) # index cannot be a range index here until all features have been merged.
         return feature_series.iloc[:,0]
@@ -262,8 +267,8 @@ class FeatureManager(generators.FeatureGenerators):
             index=self.raw_index
         df=pd.DataFrame(index=index)
         for feat in features:
-            if feat not in self.feature_list_:
-                print('feature not available')
+            if feat not in self.feature_list_+['sub','target']:
+                self.verboseprint('feature not available')
             else:
                 df=df.join(self.__get_series(feat))
         if reset:
@@ -291,7 +296,7 @@ class FeatureManager(generators.FeatureGenerators):
         self.downsample_=True
         y=self.__get_series('target') # beware, there may be an issue here if train and test_supplement overlap in time.
         if not 0 < prop <1:
-          print('Downsampling proportion not valid, using .2')
+          self.verboseprint('Downsampling proportion not valid, using .2')
           prop=.2
         n=np.sum(~y)-np.sum(y)*(1/prop -1)
         self.sample_index=(y.
@@ -313,7 +318,7 @@ class FeatureManager(generators.FeatureGenerators):
 '''   def __feat_initial(self):
        # target and test/submission files must only be of the corresponding 
        # index in the main dataframe
-       # print('making parquet files of the dataset for quicker loading')
+       # self.verboseprint('making parquet files of the dataset for quicker loading')
        def load_csv(name):
 
            file_csv='{}{}.csv'.format(self.feature_path,name)
@@ -326,16 +331,16 @@ class FeatureManager(generators.FeatureGenerators):
                'dtype':types,
                }
 
-           print('Loading {}'.format(file_csv))
+           self.verboseprint('Loading {}'.format(file_csv))
            with open(file_csv,'rb') as File:
                df=pd.read_csv(File,**read_args)
-           print(df.info())
+           self.verboseprint(df.info())
            return df
 
-       print('Loading data')
+       self.verboseprint('Loading data')
        X=load_csv('exercise')
 
-       print('saving featues, raw index, target and submission to parquet files')
+       self.verboseprint('saving featues, raw index, target and submission to parquet files')
        initial_features={str(len(X.index)):'index'}
        for col in X:
            if col == 'Class':
